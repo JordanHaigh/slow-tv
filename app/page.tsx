@@ -6,7 +6,6 @@ import {
   CircleHelp,
   Disc3,
   FolderOpen,
-  Info,
   Menu,
   Pause,
   Play,
@@ -15,11 +14,9 @@ import {
   Search,
   SkipBack,
   SkipForward,
-  SlidersHorizontal,
   Volume2,
   VolumeX,
   X,
-  Zap,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -81,7 +78,6 @@ export default function Home() {
   const [isMuted, setIsMuted] = useState(false);
   const [showGuide, setShowGuide] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [libraryName, setLibraryName] = useState('demo tape shelf');
   const [status, setStatus] = useState('ready for a slow afternoon');
   const [isScanning, setIsScanning] = useState(false);
   const [search, setSearch] = useState('');
@@ -178,9 +174,10 @@ export default function Home() {
     try {
       const files = await collectFiles(directory); const grouped = new Map<string, { path: string; file: File }[]>();
       files.forEach((item) => { const rootFolder = item.path.split('/')[0] || directoryName; grouped.set(rootFolder, [...(grouped.get(rootFolder) ?? []), item]); });
-      const nextChannels = Array.from(grouped.entries()).map(([folder, folderFiles], index) => { const localChannel = channelFromFiles(folder, folderFiles, index); objectUrlsRef.current.push(...localChannel.episodes.flatMap((episode) => episode.src ?? [])); return localChannel; });
+      const channelOffset = channels.length;
+      const nextChannels = Array.from(grouped.entries()).map(([folder, folderFiles], index) => { const localChannel = channelFromFiles(folder, folderFiles, channelOffset + index); objectUrlsRef.current.push(...localChannel.episodes.flatMap((episode) => episode.src ?? [])); return localChannel; });
       if (!nextChannels.length) { setStatus('no playable files found in that folder'); return; }
-      const matched = await matchShows(nextChannels); setChannels(matched); setChannelIndex(0); setEpisodeIndex(0); setLibraryName(directoryName.toLowerCase()); setIsPlaying(true); setStatus(`${matched.length} channels found · show details matched`);
+      const matched = await matchShows(nextChannels); setChannels((existing) => [...existing, ...matched]); setChannelIndex(channelOffset); setEpisodeIndex(0); setIsPlaying(true); setStatus(`${matched.length} new ${matched.length === 1 ? 'channel' : 'channels'} added · show details matched`);
     } catch { setStatus('folder access was cancelled'); } finally { setIsScanning(false); }
   }
 
@@ -195,9 +192,10 @@ export default function Home() {
     setIsScanning(true); setStatus('looking through your tapes…');
     const grouped = new Map<string, { path: string; file: File }[]>();
     files.forEach((file) => { const path = file.webkitRelativePath || file.name; const rootFolder = path.split('/')[0] || 'my library'; grouped.set(rootFolder, [...(grouped.get(rootFolder) ?? []), { path, file }]); });
-    const nextChannels = Array.from(grouped.entries()).map(([folder, folderFiles], index) => channelFromFiles(folder, folderFiles, index));
+    const channelOffset = channels.length;
+    const nextChannels = Array.from(grouped.entries()).map(([folder, folderFiles], index) => channelFromFiles(folder, folderFiles, channelOffset + index));
     objectUrlsRef.current.push(...nextChannels.flatMap((channel) => channel.episodes.flatMap((episode) => episode.src ?? [])));
-    const matched = await matchShows(nextChannels); setChannels(matched); setChannelIndex(0); setEpisodeIndex(0); setLibraryName((files[0].webkitRelativePath?.split('/')[0] || 'my library').toLowerCase()); setIsPlaying(true); setIsScanning(false); setStatus(`${matched.length} channels found · show details matched`); event.target.value = '';
+    const matched = await matchShows(nextChannels); setChannels((existing) => [...existing, ...matched]); setChannelIndex(channelOffset); setEpisodeIndex(0); setIsPlaying(true); setIsScanning(false); setStatus(`${matched.length} new ${matched.length === 1 ? 'channel' : 'channels'} added · show details matched`); event.target.value = '';
   }
 
   return (
@@ -209,14 +207,7 @@ export default function Home() {
       </header>
 
       <div className="layout-grid">
-        <aside className="library-rail">
-          <div className="rail-heading"><div><p className="eyebrow">YOUR LIBRARY</p><h1>{libraryName}</h1></div><button className="icon-button small" aria-label="Library settings" onClick={() => setShowSettings(true)}><SlidersHorizontal size={16} /></button></div>
-          <button className="folder-button" onClick={chooseFolder} disabled={isScanning}><FolderOpen size={18} /><span>{isScanning ? 'Reading folder…' : 'Choose a folder'}</span><ChevronRight size={17} className="folder-arrow" /></button>
-          <input ref={inputRef} className="sr-only" type="file" multiple accept="video/*,audio/*" onChange={handleInput} {...({ webkitdirectory: 'true', directory: 'true' } as any)} />
-          <div className="rail-label"><span>CHANNELS</span><span>{String(channels.length).padStart(2, '0')}</span></div>
-          <nav className="channel-list" aria-label="Channels">{visibleChannels.map((channel) => { const index = channels.findIndex((item) => item.id === channel.id); const selected = index === channelIndex; return <button key={channel.id} className={`channel-row ${selected ? 'selected' : ''}`} onClick={() => selectChannel(index)}><span className="channel-number" style={{ color: selected ? channel.accent : undefined }}>{String(channel.number).padStart(2, '0')}</span><span className="channel-copy"><strong>{channel.name}</strong><small>{channel.genre}</small></span>{selected && <span className="tuned-dot" style={{ background: channel.accent }} />}</button>; })}</nav>
-          <div className="rail-bottom"><div className="library-note"><Zap size={15} /><span>shuffle remembers<br />what you just watched</span></div><button className="plain-link" onClick={() => setShowSettings(true)}><Info size={14} /> about slow tv</button></div>
-        </aside>
+        <input ref={inputRef} className="sr-only" type="file" multiple accept="video/*,audio/*" onChange={handleInput} {...({ webkitdirectory: 'true', directory: 'true' } as any)} />
 
         <section className="tv-stage" aria-label="Television player">
           <div className="tv-topline"><span>MODEL STV-90</span><span>STEREO / NTSC</span></div>
@@ -232,10 +223,10 @@ export default function Home() {
           <div className="channel-ticker"><span>◀</span><b>{currentChannel?.callSign}</b><span>{currentChannel?.description}</span><span>▶</span></div>
         </section>
 
-        {showGuide && <aside className="guide-rail"><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><BookOpen size={18} /></div><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <button key={channel.id} className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channel.episodes.length} {channel.episodes.length === 1 ? 'episode' : 'episodes'} · {channel.genre}</small><i style={{ background: channel.accent }} /></button>)}</div><div className="guide-footer"><span><span className="keycap">↑</span><span className="keycap">↓</span> tune</span><span><span className="keycap">space</span> pause</span></div></aside>}
+        {showGuide && <aside className="guide-rail"><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><BookOpen size={18} /></div><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <button key={channel.id} className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channel.episodes.length} {channel.episodes.length === 1 ? 'episode' : 'episodes'} · {channel.genre}</small><i style={{ background: channel.accent }} /></button>)}</div><div className="guide-footer"><button className="new-channel-button" onClick={chooseFolder} disabled={isScanning}><FolderOpen size={16} /><span>{isScanning ? 'Reading folder…' : 'New channel'}</span><ChevronRight size={15} /></button><div className="guide-hints"><span><span className="keycap">↑</span><span className="keycap">↓</span> tune</span><span><span className="keycap">space</span> pause</span></div></div></aside>}
       </div>
 
-      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => setShowSettings(false)} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV reads folders on your computer as channels. Pick one folder with subfolders for shows, movies, or tape piles. The browser keeps the files local to this device.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Random playback</strong><span>Never repeat the last episode in a row.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Show matching</strong><span>Folder names are checked against TVMaze for show details.</span></div><span className="setting-pill soft">AUTO</span></div><button className="folder-button settings-folder" onClick={() => { setShowSettings(false); void chooseFolder(); }}><FolderOpen size={18} /> Choose a different folder <ChevronRight size={17} className="folder-arrow" /></button></section></div>}
+      {showSettings && <div className="modal-backdrop" onClick={() => setShowSettings(false)}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => setShowSettings(false)} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV treats each folder as a channel. Use <strong>New channel</strong> at the bottom of the guide to add shows, movies, or tape piles from your computer.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Random playback</strong><span>Never repeat the last episode in a row.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Show matching</strong><span>Folder names are checked against TVMaze for show details.</span></div><span className="setting-pill soft">AUTO</span></div></section></div>}
     </main>
   );
 }

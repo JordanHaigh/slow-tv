@@ -36,7 +36,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .icon-button:hover { border-color: var(--line); color: var(--ink); background: var(--panel); }
 .icon-button.small { width: 28px; height: 28px; }
 .mobile-menu { display: none; }
-.layout-grid { min-height: calc(100vh - 76px); display: grid; grid-template-columns: 248px minmax(520px, 1fr) 270px; gap: 0; }
+.layout-grid { min-height: calc(100vh - 76px); display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 0; }
 .library-rail, .guide-rail { padding: 30px 24px; background: rgba(27, 34, 31, .52); }
 .library-rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; }
 .rail-heading { justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
@@ -136,7 +136,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .guide-card small { grid-column: 1 / -1; color: #737e72; font-size: 10px; }
 .guide-card i { position: absolute; left: 0; top: 14px; bottom: 14px; width: 2px; border-radius: 2px; }
 .guide-time { font: 10px var(--font-mono-local); }
-.guide-footer { margin-top: auto; padding-top: 24px; display: flex; gap: 12px; color: #7b857b; font-size: 10px; }
+.guide-footer { margin-top: auto; padding-top: 24px; display: grid; gap: 18px; color: #7b857b; font-size: 10px; }
+.new-channel-button { width: 100%; padding: 12px 11px; display: flex; align-items: center; gap: 9px; border: 1px solid #65745f; border-radius: 6px; color: #e4e9d9; background: #303a34; font-size: 12px; text-align: left; transition: .2s ease; }
+.new-channel-button:hover { border-color: #a1b18e; color: #fff8e5; background: #3a463d; transform: translateY(-1px); }
+.new-channel-button:disabled { cursor: wait; opacity: .6; }
+.new-channel-button svg:last-child { margin-left: auto; color: #879284; }
+.guide-hints { display: flex; gap: 12px; }
 .keycap { margin-right: 3px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(6, 10, 8, .74); backdrop-filter: blur(6px); }
 .settings-card { width: min(100%, 460px); padding: 27px; border: 1px solid #526152; border-radius: 10px; background: #242d27; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
@@ -154,13 +159,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fadeDot { from { opacity: .4; } to { opacity: 1; } }
 
-@media (max-width: 1120px) { .layout-grid { grid-template-columns: 220px minmax(480px, 1fr); } .guide-rail { display: none; } .tv-body { grid-template-columns: minmax(0, 1fr) 135px; gap: 18px; } .speaker-panel { padding-left: 0; padding-right: 0; } .knob { width: 58px; height: 58px; } .knob::before { left: 26px; } }
+@media (max-width: 1120px) { .layout-grid { grid-template-columns: minmax(0, 1fr) 240px; } .tv-body { grid-template-columns: minmax(0, 1fr) 135px; gap: 18px; } .speaker-panel { padding-left: 0; padding-right: 0; } .knob { width: 58px; height: 58px; } .knob::before { left: 26px; } }
 @media (max-width: 760px) {
   .topbar { height: 64px; padding: 0 17px; } .brand-lockup { min-width: auto; } .status-line { display: none; } .topbar-actions { min-width: auto; gap: 7px; } .mobile-menu { display: grid; }
-  .layout-grid { display: block; min-height: calc(100vh - 64px); } .library-rail { border-right: 0; border-bottom: 1px solid var(--line); padding: 18px 17px 12px; } .rail-heading { margin-bottom: 15px; } .rail-heading h1 { font-size: 16px; }
-  .channel-list { display: flex; overflow-x: auto; padding-bottom: 3px; scrollbar-width: none; } .channel-row { min-width: 143px; min-height: 49px; padding: 8px; } .channel-copy strong { font-size: 12px; } .rail-label, .rail-bottom { display: none; }
+  .layout-grid { display: block; min-height: calc(100vh - 64px); } .guide-rail { border-left: 0; border-top: 1px solid var(--line); padding: 22px 17px 20px; min-height: 330px; }
   .tv-stage { padding: 28px 15px 20px; } .tv-topline { padding: 0 3px; } .television { padding-top: 18px; }
   .tv-body { min-height: 0; padding: 18px 16px 19px; grid-template-columns: minmax(0, 1fr) 86px; gap: 12px; border-radius: 12px 12px 18px 18px; } .screen-bezel { min-height: 260px; padding: 8px; border-radius: 22px; } .screen-glass, .screen-content, .demo-screen, .off-screen { min-height: 240px; } .screen-content video { min-height: 240px; } .demo-copy strong { font-size: 27px; } .demo-copy small { font-size: 10px; }
   .speaker-panel { padding-top: 15px; } .speaker-grille { gap: 3px; padding: 9px 7px; } .speaker-grille i { height: 5px; } .speaker-panel > span { font-size: 9px; } .control-panel { gap: 12px; } .brand-stamp { font-size: 8px; } .brand-stamp b { font-size: 12px; } .knob-cluster { gap: 14px; } .knob { width: 42px; height: 42px; } .knob::before { left: 19px; top: 5px; height: 14px; } .knob.volume { width: 37px; height: 37px; } .knob.volume::before { left: 16px; height: 11px; } .knob-button small, .power-button { font-size: 7px; } .power-button svg { width: 20px; height: 20px; }
-  .tv-controls { gap: 12px; } .now-playing strong { font-size: 12px; } .now-playing > span:last-child { font-size: 10px; } .channel-ticker { margin-top: 15px; }
+  .tv-controls { gap: 12px; } .now-playing strong { font-size: 12px; } .now-playing > span:last-child { font-size: 10px; } .channel-ticker { margin-top: 15px; } .guide-footer { padding-top: 20px; }
 }

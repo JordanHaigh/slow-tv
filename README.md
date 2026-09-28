@@ -82,7 +82,7 @@ vite.config.ts    Vinext and Vite configuration
 
 ## Deployment
 
-The project deploys to GitHub Pages through GitHub Actions whenever changes are pushed to `main`. To publish manually, open the repository’s **Actions** tab and run **Deploy to GitHub Pages**. Build the static site locally with:
+The project deploys to GitHub Pages only when you start a deployment. Open the repository’s **Actions** tab, select **Deploy to GitHub Pages**, then choose **Run workflow**. Build the static site locally with:
 
 ```bash
 npm run build

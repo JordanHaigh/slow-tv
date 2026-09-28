@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  BookOpen,
   ChevronRight,
   CircleHelp,
   Disc3,
@@ -146,17 +145,30 @@ function channelFromFiles(folderName: string, files: { path: string; file: File 
   return { id: `folder-${folderName}-${index}`, number: 20 + index, name: titleCase(folderName), callSign: `${String(index + 1).padStart(2, '0')} / ${String(20 + index).padStart(2, '0')}`, genre: 'your library', description: `${episodes.length} local ${episodes.length === 1 ? 'file' : 'files'} from ${folderName}.`, accent: accents[index % accents.length], folderPath: folderName, handleKey, episodes, source: 'folder', ...overrides };
 }
 
+function intermissionMinutesForDuration(durationSeconds: number) {
+  const contentMinutes = durationSeconds / 60;
+  if (!Number.isFinite(contentMinutes) || contentMinutes <= 0) return 2;
+  const suggestedMinutes = contentMinutes <= 20 ? contentMinutes * 0.25 : contentMinutes * 0.2;
+  return Math.max(2, Math.min(30, Math.ceil(suggestedMinutes)));
+}
+
 export default function Home() {
   const [channels, setChannels] = useState<Channel[]>(demoChannels);
   const [channelIndex, setChannelIndex] = useState(0);
   const [episodeIndex, setEpisodeIndex] = useState(0);
+  const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
+  const [scheduleTime, setScheduleTime] = useState(() => Date.now());
+  const [scheduledOffset, setScheduledOffset] = useState(0);
   const [recentlyPlayed, setRecentlyPlayed] = useState<string[]>([]);
   const [isOn, setIsOn] = useState(true);
   const [isPoweringDown, setIsPoweringDown] = useState(false);
   const [isPoweringUp, setIsPoweringUp] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [breakSecondsRemaining, setBreakSecondsRemaining] = useState<number | null>(null);
+  const [isSpeakerCompartmentOpen, setIsSpeakerCompartmentOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [isGuideCollapsed, setIsGuideCollapsed] = useState(false);
   const [showChannelModal, setShowChannelModal] = useState(false);
   const [channelPendingDelete, setChannelPendingDelete] = useState<Channel | null>(null);
   const [closingModal, setClosingModal] = useState<ModalName | null>(null);
@@ -185,17 +197,79 @@ export default function Home() {
   const currentEpisode = currentChannel?.episodes[episodeIndex % currentChannel.episodes.length];
   const visibleChannels = useMemo(() => channels.filter((channel) => channel.name.toLowerCase().includes(search.toLowerCase())), [channels, search]);
 
+  function scheduleForChannel(channel: Channel | undefined, timestamp: number) {
+    if (!channel?.episodes.length) return { episodeIndex: 0, offset: 0 };
+    const midnight = new Date(timestamp);
+    midnight.setHours(0, 0, 0, 0);
+    const elapsed = Math.max(0, (timestamp - midnight.getTime()) / 1000);
+    const durations = channel.episodes.map((episode) => mediaDurations[episode.id] ?? 20 * 60);
+    const playlistLength = durations.reduce((sum, duration) => sum + duration, 0);
+    let position = playlistLength ? elapsed % playlistLength : 0;
+    for (let index = 0; index < durations.length; index += 1) {
+      if (position < durations[index]) return { episodeIndex: index, offset: position };
+      position -= durations[index];
+    }
+    return { episodeIndex: 0, offset: 0 };
+  }
+
   useEffect(() => {
-    const timer = window.setInterval(() => setClock(new Intl.DateTimeFormat('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date())), 30_000);
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setScheduleTime(now);
+      setClock(new Intl.DateTimeFormat('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now));
+    }, 10_000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const probes: HTMLMediaElement[] = [];
+    channels.flatMap((channel) => channel.episodes).filter((episode) => episode.src).forEach((episode) => {
+      if (mediaDurations[episode.id]) return;
+      const probe = document.createElement(episode.kind === 'audio' ? 'audio' : 'video');
+      probes.push(probe);
+      probe.preload = 'metadata';
+      probe.onloadedmetadata = () => {
+        if (!cancelled && Number.isFinite(probe.duration) && probe.duration > 0) setMediaDurations((known) => ({ ...known, [episode.id]: probe.duration }));
+        probe.removeAttribute('src'); probe.load();
+      };
+      probe.src = episode.src!;
+    });
+    return () => { cancelled = true; probes.forEach((probe) => { probe.onloadedmetadata = null; probe.removeAttribute('src'); }); };
+  }, [channels]);
+
+  useEffect(() => {
+    if (breakSecondsRemaining !== null) return;
+    const scheduled = scheduleForChannel(currentChannel, scheduleTime);
+    if (scheduled.episodeIndex !== episodeIndex) {
+      setEpisodeIndex(scheduled.episodeIndex);
+      setScheduledOffset(scheduled.offset);
+    }
+  }, [channelIndex, channels, episodeIndex, mediaDurations, scheduleTime, breakSecondsRemaining]);
+
+  useEffect(() => {
     const media = currentEpisode?.kind === 'audio' ? audioRef.current : videoRef.current;
     if (!media || !currentEpisode?.src || !isOn) return;
+    const seekAndPlay = () => {
+      if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = Math.min(scheduledOffset, Math.max(0, media.duration - 0.1));
+      if (isPlaying) void media.play().catch(() => setStatus('press play to start this file'));
+    };
+    media.addEventListener('loadedmetadata', seekAndPlay, { once: true });
     media.load();
-    if (isPlaying) void media.play().catch(() => setStatus('press play to start this file'));
-  }, [currentEpisode, isOn, isPlaying]);
+    if (media.readyState >= 1) seekAndPlay();
+    return () => media.removeEventListener('loadedmetadata', seekAndPlay);
+  }, [currentEpisode, isOn, isPlaying, scheduledOffset]);
+
+  useEffect(() => {
+    if (breakSecondsRemaining === null) return;
+    if (breakSecondsRemaining === 0) {
+      setBreakSecondsRemaining(null);
+      nextEpisode();
+      return;
+    }
+    const timer = window.setTimeout(() => setBreakSecondsRemaining((seconds) => seconds === null ? null : Math.max(0, seconds - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [breakSecondsRemaining, currentChannel, recentlyPlayed]);
 
   useEffect(() => () => objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url)), []);
   useEffect(() => () => { if (powerTimerRef.current) window.clearTimeout(powerTimerRef.current); }, []);
@@ -253,17 +327,31 @@ export default function Home() {
     return () => { cancelled = true; };
   }, []);
 
-  function selectChannel(index: number) { setChannelIndex(index); setEpisodeIndex(0); setIsPlaying(true); setStatus(`tuned to ${channels[index]?.name ?? 'channel'}`); }
+  function selectChannel(index: number) {
+    if (breakSecondsRemaining !== null) { setStatus('take a break before tuning to another channel'); return; }
+    const selectedChannel = channels[index];
+    const scheduled = scheduleForChannel(selectedChannel, Date.now());
+    setChannelIndex(index); setEpisodeIndex(scheduled.episodeIndex); setScheduledOffset(scheduled.offset); setIsPlaying(true); setStatus(`tuned to ${selectedChannel?.name ?? 'channel'}`);
+  }
   function changeChannel(direction: number) { if (channels.length) selectChannel((channelIndex + direction + channels.length) % channels.length); }
   function nextEpisode() {
-    if (!currentChannel?.episodes.length) return;
+    if (!currentChannel?.episodes.length || (breakSecondsRemaining !== null && breakSecondsRemaining > 0)) return;
     const candidates = currentChannel.episodes.filter((episode) => episode.id !== recentlyPlayed[0]);
     const pool = candidates.length ? candidates : currentChannel.episodes;
     const choice = pool[Math.floor(Math.random() * pool.length)];
     setEpisodeIndex(Math.max(currentChannel.episodes.findIndex((episode) => episode.id === choice.id), 0));
     setRecentlyPlayed((history) => [choice.id, ...history].slice(0, 12)); setIsPlaying(true); setStatus(`playing something from ${currentChannel.name}`);
   }
-  function previousEpisode() { if (currentChannel?.episodes.length) { setEpisodeIndex((index) => (index - 1 + currentChannel.episodes.length) % currentChannel.episodes.length); setIsPlaying(true); } }
+  function previousEpisode() { if (breakSecondsRemaining !== null) return; if (currentChannel?.episodes.length) { setEpisodeIndex((index) => (index - 1 + currentChannel.episodes.length) % currentChannel.episodes.length); setIsPlaying(true); } }
+
+  function handleMediaEnded(durationSeconds: number) {
+    if (!currentEpisode) return;
+    const minutes = intermissionMinutesForDuration(durationSeconds);
+    setRecentlyPlayed((history) => [currentEpisode.id, ...history].slice(0, 12));
+    setIsPlaying(false);
+    setBreakSecondsRemaining(minutes * 60);
+    setStatus(`taking a ${minutes}-minute break before the next programme`);
+  }
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: any }).modelContext;
@@ -451,6 +539,17 @@ export default function Home() {
     void chooseFolder(channelDraft);
   }
 
+  function browseFolderForDraft() {
+    const name = channelDraft.name.trim();
+    if (!name) { showToast('Give the channel a name first', 'error'); return; }
+    if (!Number.isInteger(channelDraft.number) || channelDraft.number < 1 || channelDraft.number > 99) { showToast('Choose a channel number from 1 to 99', 'error'); return; }
+    if (channels.some((channel) => channel.number === channelDraft.number && channel.id !== editingChannelId)) { showToast(`Channel ${channelDraft.number} is already in use`, 'error'); return; }
+    closeModal('channels');
+    setStatus(`choose a folder for ${name}`);
+    showToast(`Choose a folder for ${name}`, 'info');
+    void chooseFolder(channelDraft);
+  }
+
   function removeChannel(channel: Channel) {
     const remaining = channels.filter((item) => item.id !== channel.id);
     const activeIndex = remaining.findIndex((item) => item.id === currentChannel?.id);
@@ -475,7 +574,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <div className="layout-grid">
+      <div className={`layout-grid ${isGuideCollapsed ? 'guide-collapsed' : ''}`}>
         <input ref={inputRef} className="sr-only" type="file" multiple accept="video/*,audio/*" onChange={handleInput} {...({ webkitdirectory: 'true', directory: 'true' } as any)} />
         <input ref={importInputRef} className="sr-only" type="file" accept="application/json,.json" onChange={importChannels} />
 
@@ -483,23 +582,27 @@ export default function Home() {
           <div className="television"><div className="tv-body">
             <div className="tv-face-label"><span>MODEL STV-90</span><span>STEREO / NTSC</span></div>
             <div className="tv-wood-grain" /><div className="screen-bezel"><div className="screen-glass"><div className="screen-content">
-              {!isOn ? <div className="off-screen"><div className="off-dot" /></div> : currentEpisode?.src ? currentEpisode.kind === 'audio' ? <div className="audio-screen"><Disc3 size={68} /><span>audio only</span><strong>{currentEpisode.name}</strong><audio ref={audioRef} src={currentEpisode.src} muted={isMuted} onEnded={nextEpisode} /></div> : <video ref={videoRef} src={currentEpisode.src} muted={isMuted} onEnded={nextEpisode} playsInline /> : <div className="demo-screen" style={{ '--channel-accent': currentChannel.accent } as React.CSSProperties}><div className="demo-haze" /><div className="demo-bloom" /><div className="demo-copy"><span>NOW BROADCASTING</span><strong>{currentChannel.name}</strong><small>{currentEpisode?.name}</small></div><div className="demo-signal">{isPlaying ? 'PLAYING' : 'PAUSED'} <i>•</i> {currentChannel.callSign}</div></div>}
+              {!isOn ? <div className="off-screen"><div className="off-dot" /></div> : breakSecondsRemaining !== null ? <div className="intermission-screen" role="status" aria-live="polite"><span className="eyebrow">STATION BREAK</span><h2>We will be right back in {Math.ceil(breakSecondsRemaining / 60)} {Math.ceil(breakSecondsRemaining / 60) === 1 ? 'minute' : 'minutes'}.</h2><strong className="intermission-countdown">{Math.floor(breakSecondsRemaining / 60)}:{String(breakSecondsRemaining % 60).padStart(2, '0')}</strong><p>Take a little break before the next programme.</p></div> : currentEpisode?.src ? currentEpisode.kind === 'audio' ? <div className="audio-screen"><Disc3 size={68} /><span>audio only</span><strong>{currentEpisode.name}</strong><audio ref={audioRef} src={currentEpisode.src} muted={isMuted} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} /></div> : <video ref={videoRef} src={currentEpisode.src} muted={isMuted} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} playsInline /> : <div className="demo-screen" style={{ '--channel-accent': currentChannel.accent } as React.CSSProperties}><div className="demo-haze" /><div className="demo-bloom" /><div className="demo-copy"><span>NOW BROADCASTING</span><strong>{currentChannel.name}</strong><small>{currentEpisode?.name}</small></div><div className="demo-signal">{isPlaying ? 'PLAYING' : 'PAUSED'} <i>•</i> {currentChannel.callSign}</div></div>}
               {isPoweringDown && <div className="power-down-effect" aria-hidden="true"><span className="power-down-line" /></div>}
               {isPoweringUp && <div className="power-up-effect" aria-hidden="true"><span className="power-up-line" /></div>}
-              <div className="scanlines" /><div className="screen-vignette" />{isOn && <div className="screen-overlay"><span>CH {String(currentChannel?.number ?? 0).padStart(2, '0')}</span><span>{isMuted ? 'MUTE' : 'STEREO'}</span></div>}
+              <div className="scanlines" /><div className="screen-vignette" />{isOn && <div className="screen-overlay"><span>CH {String(currentChannel?.number ?? 0).padStart(2, '0')} - {currentChannel?.name}</span><span>{isMuted ? 'MUTE' : 'STEREO'}</span></div>}
             </div></div></div>
-            <div className="speaker-panel"><div className="speaker-grille">{Array.from({ length: 42 }).map((_, index) => <i key={index} />)}</div><span>slow tv</span></div>
+            <div className="speaker-panel">
+              {!isSpeakerCompartmentOpen ? <button type="button" className="speaker-grille" aria-expanded={false} aria-controls="speaker-compartment" aria-label="Open TV controls inside the speaker grille" onClick={() => setIsSpeakerCompartmentOpen(true)}>{Array.from({ length: 42 }).map((_, index) => <i key={index} />)}</button> : <div className="speaker-control-grille" id="speaker-compartment" role="group" aria-label="Now playing controls">
+                <div className="speaker-transport"><button aria-label="Previous episode" disabled={breakSecondsRemaining !== null} onClick={previousEpisode}><SkipBack size={13} /></button><button className="speaker-play-button" aria-label={breakSecondsRemaining !== null ? 'Break in progress' : isPlaying ? 'Pause' : 'Play'} disabled={breakSecondsRemaining !== null} onClick={() => isOn && setIsPlaying((playing) => !playing)}>{isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}</button><button aria-label="Next random episode" disabled={breakSecondsRemaining !== null} onClick={nextEpisode}><SkipForward size={13} /></button><button aria-label={isMuted ? 'Unmute' : 'Mute'} onClick={() => setIsMuted((muted) => !muted)}>{isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button><button className="speaker-close-button" aria-label="Show speaker grille" onClick={() => setIsSpeakerCompartmentOpen(false)}><X size={12} /></button></div>
+              </div>}
+              <span>slow tv</span>
+            </div>
             <div className="control-panel"><div className="brand-stamp">SLOW<br /><b>TV</b></div><div className="knob-cluster"><button className="knob-button" aria-label="Previous channel" onClick={() => changeChannel(-1)}><span className="knob" style={{ '--knob-rotation': `${channelIndex * 32 - 22}deg` } as React.CSSProperties} /><small>CHANNEL</small></button><button className="knob-button" aria-label="Toggle mute" onClick={() => setIsMuted((muted) => !muted)}><span className="knob volume" style={{ '--knob-rotation': `${isMuted ? -70 : 18}deg` } as React.CSSProperties} /><small>VOLUME</small></button></div><button className={`power-button ${isOn ? 'active' : ''}`} aria-label={isOn ? 'Turn television off' : 'Turn television on'} onClick={togglePower}><Power size={14} /><span>POWER</span></button></div>
           </div></div>
-          <div className="tv-meta-bar"><div className="transport"><button aria-label="Previous episode" onClick={previousEpisode}><SkipBack size={15} /></button><button className="play-button" aria-label={isPlaying ? 'Pause' : 'Play'} onClick={() => isOn && setIsPlaying((playing) => !playing)}>{isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button aria-label="Next random episode" onClick={nextEpisode}><SkipForward size={15} /></button></div><div className="now-playing"><span className="eyebrow">NOW PLAYING</span><strong>{currentEpisode?.name ?? 'no tape selected'}</strong><span>{currentChannel?.name} · {currentChannel?.genre}</span></div><div className="channel-ticker"><span>◀</span><b>{currentChannel?.callSign}</b><span>{currentChannel?.description}</span><span>▶</span></div><button className="mute-button" aria-label={isMuted ? 'Unmute' : 'Mute'} onClick={() => setIsMuted((muted) => !muted)}>{isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}</button></div>
           <button className="tv-help-button icon-button" aria-label="Open help" onClick={toggleSettings}><CircleHelp size={17} /></button>
         </section>
 
-        <aside className="guide-rail"><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><BookOpen size={18} /></div><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <div key={channel.id} className="guide-card-shell"><button className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channelNeedsFolder(channel) ? 'content missing · reconnect folder' : `${channel.episodes.length} ${channel.episodes.length === 1 ? 'episode' : 'episodes'} · ${channel.genre}`}</small><i style={{ background: channel.accent }} /></button></div>)}</div><div className="guide-footer"><button className="manage-channels-button" onClick={openManageChannels} disabled={isScanning}><FolderOpen size={16} /><span>{isScanning ? 'Reading folder…' : 'Manage channels'}</span><ChevronRight size={15} /></button><div className="guide-identity"><div className="brand-lockup"><div className="brand-mark"><Radio size={14} strokeWidth={2.5} /></div><div><p className="brand-name">SLOW TV</p><p className="brand-subtitle">home broadcast system</p></div></div><span className="live-clock">{clock}</span></div></div></aside>
+        <aside className={`guide-rail ${isGuideCollapsed ? 'is-collapsed' : ''}`}><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><button type="button" className="guide-collapse-button" aria-label={isGuideCollapsed ? 'Expand channel guide' : 'Collapse channel guide'} aria-expanded={!isGuideCollapsed} onClick={() => setIsGuideCollapsed((collapsed) => !collapsed)}><ChevronRight size={18} /></button></div><div className="guide-collapsed-meta"><button type="button" className="guide-collapsed-manage" onClick={openManageChannels} disabled={isScanning} aria-label="Manage channels" title="Manage channels"><FolderOpen size={16} /><span>MANAGE</span></button></div><span className="guide-collapsed-clock live-clock">{clock}</span><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <div key={channel.id} className="guide-card-shell"><button className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channelNeedsFolder(channel) ? 'content missing · reconnect folder' : `${channel.episodes.length} ${channel.episodes.length === 1 ? 'episode' : 'episodes'} · ${channel.genre}`}</small><i style={{ background: channel.accent }} /></button></div>)}</div><div className="guide-footer"><button className="manage-channels-button" onClick={openManageChannels} disabled={isScanning}><FolderOpen size={16} /><span>{isScanning ? 'Reading folder…' : 'Manage channels'}</span><ChevronRight size={15} /></button><div className="guide-identity"><div className="brand-lockup"><div className="brand-mark"><Radio size={14} strokeWidth={2.5} /></div><div><p className="brand-name">SLOW TV</p><p className="brand-subtitle">home broadcast system</p></div></div><span className="live-clock">{clock}</span></div></div></aside>
       </div>
 
       {showSettings && <div className={"modal-backdrop" + (closingModal === "settings" ? " modal-closing" : "")} onClick={() => closeModal("settings")}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => closeModal("settings")} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV never copies your media. It remembers channel metadata in the browser and stores a local permission handle so it can read the same folders again. Export your channels if you want a portable backup.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Random playback</strong><span>Never repeat the last episode in a row.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Folder memory</strong><span>Cookie + local browser storage, with handles in IndexedDB.</span></div><span className="setting-pill soft">LOCAL</span></div></section></div>}
-      {showChannelModal && <div className={"modal-backdrop" + (closingModal === "channels" ? " modal-closing" : "")} onClick={() => closeModal("channels")}><section className="channel-manager-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Manage channels</h2></div><button className="icon-button" onClick={() => closeModal("channels")} aria-label="Close channel manager"><X size={18} /></button></div><p className="channel-editor-copy">Drag channels to change their order. Add a folder, reconnect a channel, or keep a portable backup of your channel metadata.</p><div className="channel-manager-list">{channels.map((channel) => <div className={"channel-manager-row" + (dragOverChannelId === channel.id ? " drag-over" : "") + (draggingChannelId === channel.id ? " dragging" : "")} key={channel.id} draggable onDragStart={(event) => { setDraggingChannelId(channel.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", channel.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; if (dragOverChannelId !== channel.id) setDragOverChannelId(channel.id); }} onDrop={(event) => { event.preventDefault(); const draggedId = event.dataTransfer.getData("text/plain") || draggingChannelId; if (draggedId) reorderChannels(draggedId, channel.id); setDraggingChannelId(null); setDragOverChannelId(null); }} onDragEnd={() => { setDraggingChannelId(null); setDragOverChannelId(null); }}><span className="channel-drag-handle" aria-hidden="true"><GripVertical size={15} /></span><span className="channel-manager-swatch" style={{ background: channel.accent }} /><div className="channel-manager-copy"><strong><span>CH {String(channel.number).padStart(2, "0")}</span>{channel.name}</strong><small>{channel.source === "folder" ? channel.folderPath ?? "local folder" : "demo channel"}{channelNeedsFolder(channel) ? " · CONTENT MISSING · CHOOSE FOLDER" : " · " + channel.episodes.length + " episodes"}</small></div><div className="channel-manager-row-actions"><button className="channel-manager-edit" onClick={() => openEditChannelModal(channel)} aria-label={"Edit " + channel.name}><Edit3 size={14} /> Edit</button><button className="channel-manager-delete" onClick={() => setChannelPendingDelete(channel)} aria-label={"Delete " + channel.name}><Trash2 size={14} /> Delete</button></div></div>)}</div><div className="channel-manager-actions"><button type="button" className="manage-add-button" onClick={openNewChannelModal} disabled={isScanning}><FolderOpen size={15} /> Add channel</button><div className="guide-actions"><button className="guide-text-button" onClick={() => importInputRef.current?.click()}>Import</button><button className="guide-text-button" onClick={exportChannels}>Export</button></div></div>{channelEditorOpen && <div className="channel-editor-panel"><div className="channel-editor-panel-heading"><div><p className="eyebrow">{editingChannelId ? 'EDIT CHANNEL' : 'NEW CHANNEL'}</p><h3>{editingChannelId ? 'Update channel' : 'Add a channel'}</h3></div><button type="button" className="icon-button small" onClick={() => setChannelEditorOpen(false)} aria-label="Close channel form"><X size={16} /></button></div><form onSubmit={submitChannelEditor}><div className="channel-form-grid"><label><span>Channel number</span><input type="number" min="1" max="99" value={channelDraft.number} onChange={(event) => setChannelDraft((draft) => ({ ...draft, number: Number(event.target.value) }))} /></label><label><span>Channel name</span><input autoFocus value={channelDraft.name} placeholder="e.g. Saturday cartoons" onChange={(event) => setChannelDraft((draft) => ({ ...draft, name: event.target.value }))} /></label></div><label className="channel-form-full"><span>Colour</span><div className="channel-palette">{channelPalette.map((color) => <button key={color} type="button" className={`color-swatch ${channelDraft.color === color ? 'selected' : ''}`} aria-label={`Use ${color}`} onClick={() => setChannelDraft((draft) => ({ ...draft, color }))} style={{ background: color }} />)}</div></label><label className="channel-form-full folder-path-field"><span>Content folder <em>browser reference</em></span><input className="folder-path-input" readOnly value={editingChannel?.folderPath ?? ""} placeholder={editingChannelId ? "Folder not connected — choose a folder below" : "Choose a folder after saving channel details"} /></label><label className="channel-form-full"><span>Description <em>optional</em></span><textarea rows={3} value={channelDraft.description} placeholder="A little note about what lives on this channel" onChange={(event) => setChannelDraft((draft) => ({ ...draft, description: event.target.value }))} /></label><div className="channel-editor-actions">{editingChannelId && <button type="button" className="remove-channel-button" onClick={removeEditingChannel}><Trash2 size={15} /> Remove channel</button>}{editingChannelId && <button type="button" className="folder-channel-button" onClick={openFolderForEditingChannel}><FolderOpen size={15} /> {editingChannel && channelNeedsFolder(editingChannel) ? "Choose folder" : "Change folder"}</button>}<button type="button" className="cancel-channel-button" onClick={() => setChannelEditorOpen(false)}>Cancel</button><button type="submit" className="save-channel-button">{editingChannelId ? 'Save changes' : 'Choose folder & create'}</button></div></form></div>}</section></div>}
+      {showChannelModal && <div className={"modal-backdrop" + (closingModal === "channels" ? " modal-closing" : "")} onClick={() => closeModal("channels")}><section className="channel-manager-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Manage channels</h2></div><button className="icon-button" onClick={() => closeModal("channels")} aria-label="Close channel manager"><X size={18} /></button></div><p className="channel-editor-copy">Drag channels to change their order. Add a folder, reconnect a channel, or keep a portable backup of your channel metadata.</p><div className="channel-manager-list">{channels.map((channel) => <div className={"channel-manager-row" + (dragOverChannelId === channel.id ? " drag-over" : "") + (draggingChannelId === channel.id ? " dragging" : "")} key={channel.id} draggable onDragStart={(event) => { setDraggingChannelId(channel.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", channel.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; if (dragOverChannelId !== channel.id) setDragOverChannelId(channel.id); }} onDrop={(event) => { event.preventDefault(); const draggedId = event.dataTransfer.getData("text/plain") || draggingChannelId; if (draggedId) reorderChannels(draggedId, channel.id); setDraggingChannelId(null); setDragOverChannelId(null); }} onDragEnd={() => { setDraggingChannelId(null); setDragOverChannelId(null); }}><span className="channel-drag-handle" aria-hidden="true"><GripVertical size={15} /></span><span className="channel-manager-swatch" style={{ background: channel.accent }} /><div className="channel-manager-copy"><strong><span>CH {String(channel.number).padStart(2, "0")}</span>{channel.name}</strong><small>{channel.source === "folder" ? channel.folderPath ?? "local folder" : "demo channel"}{channelNeedsFolder(channel) ? " · CONTENT MISSING · CHOOSE FOLDER" : " · " + channel.episodes.length + " episodes"}</small></div><div className="channel-manager-row-actions"><button className="channel-manager-edit" onClick={() => openEditChannelModal(channel)} aria-label={"Edit " + channel.name}><Edit3 size={14} /> Edit</button><button className="channel-manager-delete" onClick={() => setChannelPendingDelete(channel)} aria-label={"Delete " + channel.name}><Trash2 size={14} /> Delete</button></div></div>)}</div><div className="channel-manager-actions"><button type="button" className="manage-add-button" onClick={openNewChannelModal} disabled={isScanning}><FolderOpen size={15} /> Add channel</button><div className="guide-actions"><button className="guide-text-button" onClick={() => importInputRef.current?.click()}>Import</button><button className="guide-text-button" onClick={exportChannels}>Export</button></div></div>{channelEditorOpen && <div className="channel-editor-panel"><div className="channel-editor-panel-heading"><div><p className="eyebrow">{editingChannelId ? 'EDIT CHANNEL' : 'NEW CHANNEL'}</p><h3>{editingChannelId ? 'Update channel' : 'Add a channel'}</h3></div><button type="button" className="icon-button small" onClick={() => setChannelEditorOpen(false)} aria-label="Close channel form"><X size={16} /></button></div><form onSubmit={submitChannelEditor}><div className="channel-form-grid"><label><span>Channel number</span><input type="number" min="1" max="99" value={channelDraft.number} onChange={(event) => setChannelDraft((draft) => ({ ...draft, number: Number(event.target.value) }))} /></label><label><span>Channel name</span><input autoFocus value={channelDraft.name} placeholder="e.g. Saturday cartoons" onChange={(event) => setChannelDraft((draft) => ({ ...draft, name: event.target.value }))} /></label></div><label className="channel-form-full"><span>Colour</span><div className="channel-palette">{channelPalette.map((color) => <button key={color} type="button" className={`color-swatch ${channelDraft.color === color ? 'selected' : ''}`} aria-label={`Use ${color}`} onClick={() => setChannelDraft((draft) => ({ ...draft, color }))} style={{ background: color }} />)}</div></label><label className="channel-form-full folder-path-field"><span>Content folder <em>browser reference</em></span><div className="folder-select-row"><input className="folder-path-input" readOnly value={editingChannel?.folderPath ?? ""} placeholder={editingChannelId ? "Folder not connected — choose a folder below" : "Choose a folder after saving channel details"} />{!editingChannelId && <button type="button" className="folder-browse-button" onClick={browseFolderForDraft}><FolderOpen size={15} /><span>Browse</span></button>}</div></label><label className="channel-form-full"><span>Description <em>optional</em></span><textarea rows={3} value={channelDraft.description} placeholder="A little note about what lives on this channel" onChange={(event) => setChannelDraft((draft) => ({ ...draft, description: event.target.value }))} /></label><div className="channel-editor-actions">{editingChannelId && <button type="button" className="remove-channel-button" onClick={removeEditingChannel}><Trash2 size={15} /> Remove channel</button>}{editingChannelId && <button type="button" className="folder-channel-button" onClick={openFolderForEditingChannel}><FolderOpen size={15} /> {editingChannel && channelNeedsFolder(editingChannel) ? "Choose folder" : "Change folder"}</button>}<button type="button" className="cancel-channel-button" onClick={() => setChannelEditorOpen(false)}>Cancel</button><button type="submit" className="save-channel-button">{editingChannelId ? 'Save changes' : 'Choose folder & create'}</button></div></form></div>}</section></div>}
       {channelPendingDelete && <div className={"modal-backdrop delete-modal-backdrop" + (closingModal === "delete" ? " modal-closing" : "")} onClick={() => closeModal("delete")}><section className="delete-channel-card" onClick={(event) => event.stopPropagation()}><div className="delete-channel-heading"><div className="delete-channel-icon"><Trash2 size={18} /></div><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Delete channel?</h2></div></div><p className="delete-channel-copy">Remove <strong>{channelPendingDelete.name}</strong> from your lineup? The channel entry and its saved metadata will be removed, but Slow TV will not delete or move any files in your media folder.</p><div className="delete-channel-actions"><button type="button" className="cancel-channel-button" onClick={() => closeModal("delete")}>Keep channel</button><button type="button" className="delete-confirm-button" onClick={() => removeChannel(channelPendingDelete)}><Trash2 size={15} /> Delete channel</button></div></section></div>}
       {toast && <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite"><span className="toast-dot" />{toast.message}</div>}
     </main>

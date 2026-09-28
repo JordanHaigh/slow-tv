@@ -192,7 +192,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .modal-backdrop > section { animation: modalCardIn .2s cubic-bezier(.2,.8,.2,1) both; transform-origin: center; will-change: opacity, transform; }
 .modal-backdrop.modal-closing { pointer-events: none; animation: modalBackdropOut .18s ease-in both; }
 .modal-backdrop.modal-closing > section { animation: modalCardOut .18s ease-in both; }
-.settings-card { width: min(100%, 460px); padding: 27px; border: 1px solid #526152; border-radius: 10px; background: #242d27; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
+.settings-card { width: min(100%, 460px); max-height: min(90vh, 760px); overflow: auto; padding: 27px; border: 1px solid #526152; border-radius: 10px; background: #242d27; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
 .delete-channel-card { width: min(100%, 460px); padding: 25px; border: 1px solid #704d45; border-radius: 10px; background: #242d27; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
 .delete-channel-heading { display: flex; align-items: center; gap: 12px; }
 .delete-channel-heading h2 { margin: 7px 0 0; color: #f0eee6; font-size: 18px; font-weight: 500; }
@@ -211,6 +211,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .settings-row span:not(.setting-pill) { color: #818d81; font-size: 11px; }
 .setting-pill { padding: 4px 7px; border: 1px solid #6d845e; border-radius: 4px; color: #b9d383; font: 9px var(--font-mono-local); letter-spacing: .08em; }
 .setting-pill.soft { border-color: #53665a; color: #9aa99a; }
+.tmdb-settings { display: grid; gap: 10px; padding-top: 18px; }
+.tmdb-settings > label { display: flex; justify-content: space-between; gap: 12px; color: #eee9dc; font-size: 13px; font-weight: 500; }
+.tmdb-settings > label span { color: #9aa99a; font: 9px var(--font-mono-local); letter-spacing: .06em; }
+.tmdb-settings > p, .tmdb-settings > small { margin: 0; color: #818d81; font-size: 11px; line-height: 1.55; }
+.tmdb-key-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.tmdb-key-row input { flex: 1 1 180px; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #4c594d; border-radius: 5px; color: var(--ink); background: #1e2621; font-size: 12px; }
+.tmdb-key-row .save-channel-button, .tmdb-key-row .cancel-channel-button { min-height: 36px; }
+.tmdb-settings > small { padding-top: 4px; }
 .settings-folder { margin-top: 23px; }
 .channel-manager-card { width: min(100%, 610px); max-height: min(90vh, 760px); overflow: auto; padding: 27px; border: 1px solid #526152; border-radius: 10px; background: #242d27; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
 .channel-editor-copy { margin: 22px 0 20px; color: #aab3a5; font-size: 13px; line-height: 1.55; }

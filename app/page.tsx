@@ -59,7 +59,21 @@ const CHANNEL_COOKIE = 'slow-tv-channel-metadata';
 const CHANNEL_STORAGE = 'slow-tv-channel-metadata';
 const PROFILE_COOKIE = 'slow-tv-profile';
 const PROFILE_STORAGE = 'slow-tv-profile';
+const TMDB_KEY_COOKIE = 'slow-tv-tmdb-api-key';
 const HANDLE_DB = 'slow-tv-directory-handles';
+
+function readTmdbApiKey() {
+  try {
+    const entry = document.cookie.split('; ').find((cookie) => cookie.startsWith(`${TMDB_KEY_COOKIE}=`));
+    return entry ? decodeURIComponent(entry.slice(TMDB_KEY_COOKIE.length + 1)) : '';
+  } catch { return ''; }
+}
+
+function writeTmdbApiKey(key: string) {
+  const secure = window.location.protocol === 'https:' ? '; secure' : '';
+  if (!key) document.cookie = `${TMDB_KEY_COOKIE}=; max-age=0; path=/; samesite=strict${secure}`;
+  else document.cookie = `${TMDB_KEY_COOKIE}=${encodeURIComponent(key.trim())}; max-age=31536000; path=/; samesite=strict${secure}`;
+}
 
 function channelMetadata(channels: Channel[]): SavedChannel[] {
   return channels.filter((channel) => channel.source === 'folder').map(({ episodes: _episodes, source: _source, ...channel }) => ({ ...channel, source: 'folder' }));
@@ -208,6 +222,8 @@ export default function Home() {
   const [breakSecondsRemaining, setBreakSecondsRemaining] = useState<number | null>(null);
   const [isSpeakerCompartmentOpen, setIsSpeakerCompartmentOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [tmdbApiKey, setTmdbApiKey] = useState('');
+  const [tmdbKeyDraft, setTmdbKeyDraft] = useState('');
   const [isGuideCollapsed, setIsGuideCollapsed] = useState(false);
   const [showChannelModal, setShowChannelModal] = useState(false);
   const [channelPendingDelete, setChannelPendingDelete] = useState<Channel | null>(null);
@@ -253,6 +269,12 @@ export default function Home() {
     const saved = readPlaybackProfile();
     playbackProfileRef.current = saved;
     setHasLoadedPlaybackProfile(true);
+  }, []);
+
+  useEffect(() => {
+    const key = readTmdbApiKey();
+    setTmdbApiKey(key);
+    setTmdbKeyDraft(key);
   }, []);
 
   useEffect(() => {
@@ -470,6 +492,31 @@ export default function Home() {
   async function matchShows(nextChannels: Channel[]) {
     return Promise.all(nextChannels.map(async (channel) => {
       try {
+        const tmdbKey = readTmdbApiKey();
+        if (tmdbKey) {
+          const params = new URLSearchParams({ query: channel.name, api_key: tmdbKey });
+          const searchResponse = await fetch(`https://api.themoviedb.org/3/search/multi?${params}`);
+          if (!searchResponse.ok) return channel;
+          const searchData = await searchResponse.json();
+          const normalize = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+          const exactMatches = (searchData.results ?? []).filter((result: any) => {
+            if (result.media_type !== 'movie' && result.media_type !== 'tv') return false;
+            const title = result.media_type === 'movie' ? result.title : result.name;
+            return normalize(title ?? '') === normalize(channel.name);
+          });
+          if (exactMatches.length !== 1) return channel;
+          const match = exactMatches[0];
+          const detailResponse = await fetch(`https://api.themoviedb.org/3/${match.media_type}/${match.id}?api_key=${encodeURIComponent(tmdbKey)}`);
+          if (!detailResponse.ok) return channel;
+          const details = await detailResponse.json();
+          const posterPath = details.poster_path;
+          return {
+            ...channel,
+            genre: details.genres?.[0]?.name?.toLowerCase() || channel.genre,
+            description: details.overview || channel.description,
+            poster: posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : channel.poster,
+          };
+        }
         const response = await fetch(`https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(channel.name)}`);
         if (!response.ok) return channel;
         const show = await response.json();
@@ -489,7 +536,7 @@ export default function Home() {
       await saveDirectoryHandle(nextChannels[0].handleKey, directory);
       objectUrlsRef.current.push(...nextChannels.flatMap((channel) => channel.episodes.flatMap((episode) => episode.src ?? [])));
       if (!nextChannels[0].episodes.length) { setStatus('no playable files found in that folder'); showToast('No playable media found in that folder', 'error'); return; }
-      const matched = draft || existing ? nextChannels : await matchShows(nextChannels);
+      const matched = readTmdbApiKey() || (!draft && !existing) ? await matchShows(nextChannels) : nextChannels;
       const merged = existing ? channels.map((channel) => channel.id === existing.id ? matched[0] : channel) : mergeChannels(channels, matched);
       persistChannelMetadata(merged); setChannels(merged); setChannelIndex(Math.max(merged.findIndex((channel) => channel.id === matched[0]?.id), 0)); setEpisodeIndex(0); setIsPlaying(true); setStatus(existing ? `${existing.name} folder connected` : `${matched.length} new ${matched.length === 1 ? 'channel' : 'channels'} added`); showToast(existing ? `${existing.name} folder connected` : `${matched[0]?.name ?? 'Channel'} added`);
     } catch { setStatus('folder access was cancelled'); } finally { setIsScanning(false); }
@@ -513,7 +560,7 @@ export default function Home() {
     const nextChannels = [{ ...localChannel, id: existing?.id ?? localChannel.id, handleKey: existing?.handleKey ?? existing?.id ?? localChannel.id }];
     objectUrlsRef.current.push(...nextChannels.flatMap((channel) => channel.episodes.flatMap((episode) => episode.src ?? [])));
     if (!nextChannels[0].episodes.length) { setIsScanning(false); setStatus('no playable files found in that folder'); showToast('No playable media found in that folder', 'error'); event.target.value = ''; return; }
-    const matched = draft || existing ? nextChannels : await matchShows(nextChannels); const merged = existing ? channels.map((channel) => channel.id === existing.id ? matched[0] : channel) : mergeChannels(channels, matched); persistChannelMetadata(merged); setChannels(merged); setChannelIndex(Math.max(merged.findIndex((channel) => channel.id === matched[0]?.id), 0)); setEpisodeIndex(0); setIsPlaying(true); setIsScanning(false); setStatus(existing ? `${existing.name} folder connected` : `${matched.length} new ${matched.length === 1 ? 'channel' : 'channels'} added · show details matched`); showToast(existing ? `${existing.name} folder connected` : `${matched[0]?.name ?? 'Channel'} added`); event.target.value = '';
+    const matched = readTmdbApiKey() || (!draft && !existing) ? await matchShows(nextChannels) : nextChannels; const merged = existing ? channels.map((channel) => channel.id === existing.id ? matched[0] : channel) : mergeChannels(channels, matched); persistChannelMetadata(merged); setChannels(merged); setChannelIndex(Math.max(merged.findIndex((channel) => channel.id === matched[0]?.id), 0)); setEpisodeIndex(0); setIsPlaying(true); setIsScanning(false); setStatus(existing ? `${existing.name} folder connected` : `${matched.length} new ${matched.length === 1 ? 'channel' : 'channels'} added · show details matched`); showToast(existing ? `${existing.name} folder connected` : `${matched[0]?.name ?? 'Channel'} added`); event.target.value = '';
   }
 
   function exportChannels() {
@@ -686,7 +733,7 @@ export default function Home() {
         <aside className={`guide-rail ${isGuideCollapsed ? 'is-collapsed' : ''}`}><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><button type="button" className="guide-collapse-button" aria-label={isGuideCollapsed ? 'Expand channel guide' : 'Collapse channel guide'} aria-expanded={!isGuideCollapsed} onClick={() => setIsGuideCollapsed((collapsed) => !collapsed)}><ChevronRight size={18} /></button></div><div className="guide-collapsed-meta"><button type="button" className="guide-collapsed-manage" onClick={openManageChannels} disabled={isScanning} aria-label="Manage channels" title="Manage channels"><FolderOpen size={16} /><span>MANAGE</span></button></div><span className="guide-collapsed-clock live-clock">{clock}</span><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <div key={channel.id} className="guide-card-shell"><button className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channelNeedsFolder(channel) ? 'content missing · reconnect folder' : `${channel.episodes.length} ${channel.episodes.length === 1 ? 'episode' : 'episodes'} · ${channel.genre}`}</small><i style={{ background: channel.accent }} /></button></div>)}</div><div className="guide-footer"><button className="manage-channels-button" onClick={openManageChannels} disabled={isScanning}><FolderOpen size={16} /><span>{isScanning ? 'Reading folder…' : 'Manage channels'}</span><ChevronRight size={15} /></button><div className="guide-identity"><div className="brand-lockup"><div className="brand-mark"><Radio size={14} strokeWidth={2.5} /></div><div><p className="brand-name">SLOW TV</p><p className="brand-subtitle">home broadcast system</p></div></div><span className="live-clock">{clock}</span></div></div></aside>
       </div>
 
-      {showSettings && <div className={"modal-backdrop" + (closingModal === "settings" ? " modal-closing" : "")} onClick={() => closeModal("settings")}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => closeModal("settings")} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV never copies your media. It remembers channel metadata in the browser and stores a local permission handle so it can read the same folders again. Export your channels if you want a portable backup.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Episode playback</strong><span>Resumes the latest unfinished episode, then continues through unwatched episodes.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Folder memory</strong><span>Profile cookie + local browser storage, with handles in IndexedDB.</span></div><span className="setting-pill soft">LOCAL</span></div></section></div>}
+      {showSettings && <div className={"modal-backdrop" + (closingModal === "settings" ? " modal-closing" : "")} onClick={() => closeModal("settings")}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => closeModal("settings")} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV never copies your media. It remembers channel metadata in the browser and stores a local permission handle so it can read the same folders again. Export your channels if you want a portable backup.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Episode playback</strong><span>Resumes the latest unfinished episode, then continues through unwatched episodes.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Folder memory</strong><span>Profile cookie + local browser storage, with handles in IndexedDB.</span></div><span className="setting-pill soft">LOCAL</span></div><div className="tmdb-settings"><label htmlFor="tmdb-api-key">TMDB API key <span>{tmdbApiKey ? 'SAVED IN THIS BROWSER' : 'OPTIONAL'}</span></label><p>Add your own TMDB key to look up channel genre, description, and artwork when you connect a folder. It is stored in a cookie in this browser only. Enter it again on each device or deployed site.</p><div className="tmdb-key-row"><input id="tmdb-api-key" type="password" autoComplete="off" spellCheck={false} value={tmdbKeyDraft} placeholder="Paste your TMDB API key" onChange={(event) => setTmdbKeyDraft(event.target.value)} /><button type="button" className="save-channel-button" onClick={() => { const key = tmdbKeyDraft.trim(); writeTmdbApiKey(key); setTmdbApiKey(key); setTmdbKeyDraft(key); showToast(key ? 'TMDB key saved in this browser' : 'TMDB key removed'); }}>Save</button>{tmdbApiKey && <button type="button" className="cancel-channel-button" onClick={() => { writeTmdbApiKey(''); setTmdbApiKey(''); setTmdbKeyDraft(''); showToast('TMDB key removed'); }}>Remove</button>}</div><small>TMDB data is supplied by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.</small></div></section></div>}
       {showChannelModal && <div className={"modal-backdrop" + (closingModal === "channels" ? " modal-closing" : "")} onClick={() => closeModal("channels")}><section className="channel-manager-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Manage channels</h2></div><button className="icon-button" onClick={() => closeModal("channels")} aria-label="Close channel manager"><X size={18} /></button></div><p className="channel-editor-copy">Drag channels to change their order. Add a folder, reconnect a channel, or keep a portable backup of your channel metadata.</p><div className="channel-manager-list">{channels.map((channel) => <div className={"channel-manager-row" + (dragOverChannelId === channel.id ? " drag-over" : "") + (draggingChannelId === channel.id ? " dragging" : "")} key={channel.id} draggable onDragStart={(event) => { setDraggingChannelId(channel.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", channel.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; if (dragOverChannelId !== channel.id) setDragOverChannelId(channel.id); }} onDrop={(event) => { event.preventDefault(); const draggedId = event.dataTransfer.getData("text/plain") || draggingChannelId; if (draggedId) reorderChannels(draggedId, channel.id); setDraggingChannelId(null); setDragOverChannelId(null); }} onDragEnd={() => { setDraggingChannelId(null); setDragOverChannelId(null); }}><span className="channel-drag-handle" aria-hidden="true"><GripVertical size={15} /></span><span className="channel-manager-swatch" style={{ background: channel.accent }} /><div className="channel-manager-copy"><strong><span>CH {String(channel.number).padStart(2, "0")}</span>{channel.name}</strong><small>{channel.source === "folder" ? channel.folderPath ?? "local folder" : "demo channel"}{channelNeedsFolder(channel) ? " · CONTENT MISSING · CHOOSE FOLDER" : " · " + channel.episodes.length + " episodes"}</small></div><div className="channel-manager-row-actions"><button className="channel-manager-edit" onClick={() => openEditChannelModal(channel)} aria-label={"Edit " + channel.name}><Edit3 size={14} /> Edit</button><button className="channel-manager-delete" onClick={() => setChannelPendingDelete(channel)} aria-label={"Delete " + channel.name}><Trash2 size={14} /> Delete</button></div></div>)}</div><div className="channel-manager-actions"><button type="button" className="manage-add-button" onClick={openNewChannelModal} disabled={isScanning}><FolderOpen size={15} /> Add channel</button><div className="guide-actions"><button className="guide-text-button" onClick={() => importInputRef.current?.click()}>Import</button><button className="guide-text-button" onClick={exportChannels}>Export</button></div></div>{channelEditorOpen && <div className="channel-editor-panel"><div className="channel-editor-panel-heading"><div><p className="eyebrow">{editingChannelId ? 'EDIT CHANNEL' : 'NEW CHANNEL'}</p><h3>{editingChannelId ? 'Update channel' : 'Add a channel'}</h3></div><button type="button" className="icon-button small" onClick={() => setChannelEditorOpen(false)} aria-label="Close channel form"><X size={16} /></button></div><form onSubmit={submitChannelEditor}><div className="channel-form-grid"><label><span>Channel number</span><input type="number" min="1" max="99" value={channelDraft.number} onChange={(event) => setChannelDraft((draft) => ({ ...draft, number: Number(event.target.value) }))} /></label><label><span>Channel name</span><input autoFocus value={channelDraft.name} placeholder="e.g. Saturday cartoons" onChange={(event) => setChannelDraft((draft) => ({ ...draft, name: event.target.value }))} /></label></div><label className="channel-form-full"><span>Colour</span><div className="channel-palette">{channelPalette.map((color) => <button key={color} type="button" className={`color-swatch ${channelDraft.color === color ? 'selected' : ''}`} aria-label={`Use ${color}`} onClick={() => setChannelDraft((draft) => ({ ...draft, color }))} style={{ background: color }} />)}</div></label><label className="channel-form-full folder-path-field"><span>Content folder <em>browser reference</em></span><div className="folder-select-row"><input className="folder-path-input" readOnly value={editingChannel?.folderPath ?? ""} placeholder={editingChannelId ? "Folder not connected — choose a folder below" : "Choose a folder after saving channel details"} />{!editingChannelId && <button type="button" className="folder-browse-button" onClick={browseFolderForDraft}><FolderOpen size={15} /><span>Browse</span></button>}</div></label><label className="channel-form-full"><span>Description <em>optional</em></span><textarea rows={3} value={channelDraft.description} placeholder="A little note about what lives on this channel" onChange={(event) => setChannelDraft((draft) => ({ ...draft, description: event.target.value }))} /></label><div className="channel-editor-actions">{editingChannelId && <button type="button" className="remove-channel-button" onClick={removeEditingChannel}><Trash2 size={15} /> Remove channel</button>}{editingChannelId && <button type="button" className="folder-channel-button" onClick={openFolderForEditingChannel}><FolderOpen size={15} /> {editingChannel && channelNeedsFolder(editingChannel) ? "Choose folder" : "Change folder"}</button>}<button type="button" className="cancel-channel-button" onClick={() => setChannelEditorOpen(false)}>Cancel</button><button type="submit" className="save-channel-button">{editingChannelId ? 'Save changes' : 'Choose folder & create'}</button></div></form></div>}</section></div>}
       {channelPendingDelete && <div className={"modal-backdrop delete-modal-backdrop" + (closingModal === "delete" ? " modal-closing" : "")} onClick={() => closeModal("delete")}><section className="delete-channel-card" onClick={(event) => event.stopPropagation()}><div className="delete-channel-heading"><div className="delete-channel-icon"><Trash2 size={18} /></div><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Delete channel?</h2></div></div><p className="delete-channel-copy">Remove <strong>{channelPendingDelete.name}</strong> from your lineup? The channel entry and its saved metadata will be removed, but Slow TV will not delete or move any files in your media folder.</p><div className="delete-channel-actions"><button type="button" className="cancel-channel-button" onClick={() => closeModal("delete")}>Keep channel</button><button type="button" className="delete-confirm-button" onClick={() => removeChannel(channelPendingDelete)}><Trash2 size={15} /> Delete channel</button></div></section></div>}
       {toast && <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite"><span className="toast-dot" />{toast.message}</div>}

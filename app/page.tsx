@@ -27,6 +27,8 @@ type Channel = {
   accent: string; poster?: string; folderPath?: string; handleKey?: string; episodes: MediaItem[]; source: 'demo' | 'folder';
 };
 type SavedChannel = Omit<Channel, 'episodes' | 'source'> & { source: 'folder' };
+type EpisodeWatchState = { status: 'not-watched' | 'in-progress' | 'watched'; currentTime: number; updatedAt: number };
+type PlaybackProfile = Record<string, EpisodeWatchState>;
 type ChannelDraft = { number: number; color: string; name: string; description: string };
 type ModalName = 'settings' | 'channels' | 'delete';
 
@@ -55,6 +57,8 @@ const titleCase = (value: string) => value.replace(/[_./-]+/g, ' ').replace(/\s+
 const cleanSummary = (summary?: string) => (summary ?? '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').trim();
 const CHANNEL_COOKIE = 'slow-tv-channel-metadata';
 const CHANNEL_STORAGE = 'slow-tv-channel-metadata';
+const PROFILE_COOKIE = 'slow-tv-profile';
+const PROFILE_STORAGE = 'slow-tv-profile';
 const HANDLE_DB = 'slow-tv-directory-handles';
 
 function channelMetadata(channels: Channel[]): SavedChannel[] {
@@ -77,6 +81,44 @@ function readChannelMetadata(): SavedChannel[] {
     if (match) return JSON.parse(decodeURIComponent(match.slice(CHANNEL_COOKIE.length + 1))) as SavedChannel[];
   } catch { /* no saved metadata */ }
   return [];
+}
+
+function readPlaybackProfile(): PlaybackProfile {
+  try {
+    const cookieMap = new Map(document.cookie.split('; ').map((entry) => {
+      const separator = entry.indexOf('=');
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }));
+    const base = cookieMap.get(PROFILE_COOKIE);
+    const chunks = base !== undefined
+      ? [base]
+      : [...cookieMap.entries()].filter(([name]) => name.startsWith(`${PROFILE_COOKIE}-part-`)).sort(([a], [b]) => Number(a.slice(`${PROFILE_COOKIE}-part-`.length)) - Number(b.slice(`${PROFILE_COOKIE}-part-`.length))).map(([, value]) => value);
+    if (chunks.length) return JSON.parse(decodeURIComponent(chunks.join(''))) as PlaybackProfile;
+  } catch { /* use local-storage fallback */ }
+  try {
+    const stored = localStorage.getItem(PROFILE_STORAGE);
+    if (stored) return JSON.parse(stored) as PlaybackProfile;
+  } catch { /* start with a new profile */ }
+  return {};
+}
+
+function writePlaybackProfile(profile: PlaybackProfile) {
+  const serialized = JSON.stringify(profile);
+  try { localStorage.setItem(PROFILE_STORAGE, serialized); } catch { /* storage is optional */ }
+  try {
+    const encoded = encodeURIComponent(serialized);
+    const parts = encoded.match(/.{1,3500}/g) ?? [''];
+    const existingParts = document.cookie.split('; ').map((entry) => entry.slice(0, entry.indexOf('='))).filter((name) => name.startsWith(`${PROFILE_COOKIE}-part-`));
+    if (parts.length === 1) document.cookie = `${PROFILE_COOKIE}=${parts[0]}; max-age=31536000; path=/; samesite=lax`;
+    else {
+      parts.forEach((part, index) => { document.cookie = `${PROFILE_COOKIE}-part-${index}=${part}; max-age=31536000; path=/; samesite=lax`; });
+      document.cookie = `${PROFILE_COOKIE}=; max-age=0; path=/; samesite=lax`;
+    }
+    existingParts.forEach((name) => {
+      const index = Number(name.slice(`${PROFILE_COOKIE}-part-`.length));
+      if (!Number.isInteger(index) || index >= parts.length) document.cookie = `${name}=; max-age=0; path=/; samesite=lax`;
+    });
+  } catch { /* cookie storage is optional */ }
 }
 
 function openHandleDb(): Promise<IDBDatabase | null> {
@@ -156,9 +198,7 @@ export default function Home() {
   const [channels, setChannels] = useState<Channel[]>(demoChannels);
   const [channelIndex, setChannelIndex] = useState(0);
   const [episodeIndex, setEpisodeIndex] = useState(0);
-  const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
-  const [scheduleTime, setScheduleTime] = useState(() => Date.now());
-  const [scheduledOffset, setScheduledOffset] = useState(0);
+  const [hasLoadedPlaybackProfile, setHasLoadedPlaybackProfile] = useState(false);
   const [recentlyPlayed, setRecentlyPlayed] = useState<string[]>([]);
   const [isOn, setIsOn] = useState(true);
   const [isPoweringDown, setIsPoweringDown] = useState(false);
@@ -186,7 +226,8 @@ export default function Home() {
   const [clock, setClock] = useState('12:42');
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const manualSchedulesRef = useRef<Record<string, { startedAt: number; episodeIndex: number; offset: number }>>({});
+  const playbackProfileRef = useRef<PlaybackProfile>({});
+  const lastProgressWriteRef = useRef<Record<string, number>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const objectUrlsRef = useRef<string[]>([]);
@@ -198,75 +239,43 @@ export default function Home() {
   const currentEpisode = currentChannel?.episodes[episodeIndex % currentChannel.episodes.length];
   const visibleChannels = useMemo(() => channels.filter((channel) => channel.name.toLowerCase().includes(search.toLowerCase())), [channels, search]);
 
-  function scheduleForChannel(channel: Channel | undefined, timestamp: number) {
-    if (!channel?.episodes.length) return { episodeIndex: 0, offset: 0 };
-    const durations = channel.episodes.map((episode) => mediaDurations[episode.id] ?? 20 * 60);
-    const playlistLength = durations.reduce((sum, duration) => sum + duration, 0);
-    const manualSchedule = manualSchedulesRef.current[channel.id];
-    let startPosition = 0;
-    let elapsed: number;
-    if (manualSchedule) {
-      startPosition = durations.slice(0, manualSchedule.episodeIndex).reduce((sum, duration) => sum + duration, 0) + manualSchedule.offset;
-      elapsed = Math.max(0, (timestamp - manualSchedule.startedAt) / 1000);
-    } else {
-      const midnight = new Date(timestamp);
-      midnight.setHours(0, 0, 0, 0);
-      elapsed = Math.max(0, (timestamp - midnight.getTime()) / 1000);
-    }
-    let position = playlistLength ? (startPosition + elapsed) % playlistLength : 0;
-    for (let index = 0; index < durations.length; index += 1) {
-      if (position < durations[index]) return { episodeIndex: index, offset: position };
-      position -= durations[index];
-    }
-    return { episodeIndex: 0, offset: 0 };
-  }
-
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    const updateClock = () => {
       const now = Date.now();
-      setScheduleTime(now);
       setClock(new Intl.DateTimeFormat('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now));
-    }, 10_000);
+    };
+    updateClock();
+    const timer = window.setInterval(updateClock, 10_000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    const probes: HTMLMediaElement[] = [];
-    channels.flatMap((channel) => channel.episodes).filter((episode) => episode.src).forEach((episode) => {
-      if (mediaDurations[episode.id]) return;
-      const probe = document.createElement(episode.kind === 'audio' ? 'audio' : 'video');
-      probes.push(probe);
-      probe.preload = 'metadata';
-      probe.onloadedmetadata = () => {
-        if (!cancelled && Number.isFinite(probe.duration) && probe.duration > 0) setMediaDurations((known) => ({ ...known, [episode.id]: probe.duration }));
-        probe.removeAttribute('src'); probe.load();
-      };
-      probe.src = episode.src!;
-    });
-    return () => { cancelled = true; probes.forEach((probe) => { probe.onloadedmetadata = null; probe.removeAttribute('src'); }); };
-  }, [channels]);
+    const saved = readPlaybackProfile();
+    playbackProfileRef.current = saved;
+    setHasLoadedPlaybackProfile(true);
+  }, []);
 
   useEffect(() => {
-    if (breakSecondsRemaining !== null) return;
-    const scheduled = scheduleForChannel(currentChannel, scheduleTime);
-    if (scheduled.episodeIndex !== episodeIndex) {
-      setEpisodeIndex(scheduled.episodeIndex);
-      setScheduledOffset(scheduled.offset);
-    }
-  }, [channelIndex, channels, episodeIndex, mediaDurations, scheduleTime, breakSecondsRemaining]);
+    if (!hasLoadedPlaybackProfile) return;
+    const updated = { ...playbackProfileRef.current };
+    for (const episode of channels.flatMap((channel) => channel.episodes)) updated[episode.id] ??= { status: 'not-watched', currentTime: 0, updatedAt: Date.now() };
+    playbackProfileRef.current = updated;
+    writePlaybackProfile(updated);
+  }, [channels, hasLoadedPlaybackProfile]);
 
   useEffect(() => {
     const media = currentEpisode?.kind === 'audio' ? audioRef.current : videoRef.current;
     if (!media || !currentEpisode?.src) return;
-    const seekToSchedule = () => {
-      if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = Math.min(scheduledOffset, Math.max(0, media.duration - 0.1));
+    const seekToSavedPosition = () => {
+      const saved = playbackProfileRef.current[currentEpisode.id];
+      const resumeAt = saved?.status === 'in-progress' ? saved.currentTime : 0;
+      if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = Math.min(resumeAt, Math.max(0, media.duration - 0.1));
     };
-    media.addEventListener('loadedmetadata', seekToSchedule, { once: true });
+    media.addEventListener('loadedmetadata', seekToSavedPosition, { once: true });
     media.load();
-    if (media.readyState >= 1) seekToSchedule();
-    return () => media.removeEventListener('loadedmetadata', seekToSchedule);
-  }, [currentEpisode, scheduledOffset]);
+    if (media.readyState >= 1) seekToSavedPosition();
+    return () => media.removeEventListener('loadedmetadata', seekToSavedPosition);
+  }, [currentEpisode]);
 
   useEffect(() => {
     const media = currentEpisode?.kind === 'audio' ? audioRef.current : videoRef.current;
@@ -292,6 +301,52 @@ export default function Home() {
   useEffect(() => () => objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url)), []);
   useEffect(() => () => { if (powerTimerRef.current) window.clearTimeout(powerTimerRef.current); }, []);
   useEffect(() => () => { if (modalTimerRef.current) window.clearTimeout(modalTimerRef.current); }, []);
+
+  function updateEpisodeWatchState(episodeId: string, status: EpisodeWatchState['status'], currentTime: number, force = false) {
+    const now = Date.now();
+    if (!force && status === 'in-progress' && now - (lastProgressWriteRef.current[episodeId] ?? 0) < 5000) return;
+    const next = { ...playbackProfileRef.current, [episodeId]: { status, currentTime: status === 'in-progress' ? Math.max(0, currentTime) : 0, updatedAt: now } };
+    playbackProfileRef.current = next;
+    lastProgressWriteRef.current[episodeId] = now;
+    writePlaybackProfile(next);
+  }
+
+  function saveCurrentEpisodeProgress() {
+    if (!currentEpisode) return;
+    const media = currentEpisode.kind === 'audio' ? audioRef.current : videoRef.current;
+    const existing = playbackProfileRef.current[currentEpisode.id];
+    if (existing?.status === 'watched' && !isPlaying) return;
+    if (!isPlaying && !existing && !(media && media.currentTime > 0)) return;
+    const position = media?.currentTime ?? playbackProfileRef.current[currentEpisode.id]?.currentTime ?? 0;
+    updateEpisodeWatchState(currentEpisode.id, 'in-progress', position, true);
+  }
+
+  function pickUnwatchedEpisode(channel: Channel, excludeId?: string) {
+    let candidates = channel.episodes.filter((episode) => (playbackProfileRef.current[episode.id]?.status ?? 'not-watched') === 'not-watched' && episode.id !== excludeId);
+    if (!candidates.length) {
+      const unfinished = channel.episodes.filter((episode) => playbackProfileRef.current[episode.id]?.status === 'in-progress' && episode.id !== excludeId);
+      if (unfinished.length) {
+        const chosen = unfinished[Math.floor(Math.random() * unfinished.length)];
+        return Math.max(0, channel.episodes.findIndex((episode) => episode.id === chosen.id));
+      }
+      const reset = { ...playbackProfileRef.current };
+      channel.episodes.forEach((episode) => { if (reset[episode.id]?.status === 'watched') reset[episode.id] = { status: 'not-watched', currentTime: 0, updatedAt: Date.now() }; });
+      playbackProfileRef.current = reset;
+      writePlaybackProfile(reset);
+      candidates = channel.episodes.filter((episode) => episode.id !== excludeId);
+    }
+    if (!candidates.length) candidates = channel.episodes;
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+    return Math.max(0, channel.episodes.findIndex((episode) => episode.id === chosen?.id));
+  }
+
+  function chooseChannelEpisode(channel: Channel) {
+    const inProgress = channel.episodes
+      .map((episode, index) => ({ episode, index, progress: playbackProfileRef.current[episode.id] }))
+      .filter((entry) => entry.progress?.status === 'in-progress')
+      .sort((a, b) => (b.progress?.updatedAt ?? 0) - (a.progress?.updatedAt ?? 0))[0];
+    return inProgress?.index ?? pickUnwatchedEpisode(channel);
+  }
 
   function showToast(message: string, tone: 'success' | 'error' | 'info' = 'success') {
     setToast({ message, tone });
@@ -347,29 +402,34 @@ export default function Home() {
 
   function selectChannel(index: number) {
     if (breakSecondsRemaining !== null) { setStatus('take a break before tuning to another channel'); return; }
+    if (currentEpisode) saveCurrentEpisodeProgress();
     const selectedChannel = channels[index];
-    const scheduled = scheduleForChannel(selectedChannel, Date.now());
-    setChannelIndex(index); setEpisodeIndex(scheduled.episodeIndex); setScheduledOffset(scheduled.offset); setIsPlaying(true); setStatus(`tuned to ${selectedChannel?.name ?? 'channel'}`);
+    if (!selectedChannel) return;
+    const nextIndex = chooseChannelEpisode(selectedChannel);
+    if (currentEpisode) setRecentlyPlayed((history) => [currentEpisode.id, ...history].slice(0, 24));
+    setChannelIndex(index); setEpisodeIndex(nextIndex); setIsPlaying(true); setStatus(`tuned to ${selectedChannel.name}`);
   }
   function changeChannel(direction: number) { if (channels.length) selectChannel((channelIndex + direction + channels.length) % channels.length); }
-  function anchorManualSchedule(index: number, offset = 0) {
-    if (currentChannel) manualSchedulesRef.current[currentChannel.id] = { startedAt: Date.now(), episodeIndex: index, offset };
-  }
   function nextEpisode() {
     if (!currentChannel?.episodes.length || (breakSecondsRemaining !== null && breakSecondsRemaining > 0)) return;
-    const candidates = currentChannel.episodes.filter((episode) => episode.id !== recentlyPlayed[0]);
-    const pool = candidates.length ? candidates : currentChannel.episodes;
-    const choice = pool[Math.floor(Math.random() * pool.length)];
-    const nextIndex = Math.max(currentChannel.episodes.findIndex((episode) => episode.id === choice.id), 0);
-    anchorManualSchedule(nextIndex);
-    setEpisodeIndex(nextIndex); setScheduledOffset(0);
-    setRecentlyPlayed((history) => [choice.id, ...history].slice(0, 12)); setIsPlaying(true); setStatus(`playing something from ${currentChannel.name}`);
+    if (currentEpisode) saveCurrentEpisodeProgress();
+    const nextIndex = pickUnwatchedEpisode(currentChannel, currentEpisode?.id);
+    setEpisodeIndex(nextIndex);
+    setRecentlyPlayed((history) => [currentEpisode?.id, ...history].filter((id): id is string => Boolean(id)).slice(0, 24)); setIsPlaying(true); setStatus(`playing something from ${currentChannel.name}`);
   }
-  function previousEpisode() { if (breakSecondsRemaining !== null) return; if (currentChannel?.episodes.length) { const previousIndex = (episodeIndex - 1 + currentChannel.episodes.length) % currentChannel.episodes.length; anchorManualSchedule(previousIndex); setEpisodeIndex(previousIndex); setScheduledOffset(0); setIsPlaying(true); } }
+  function previousEpisode() {
+    if (breakSecondsRemaining !== null || !currentChannel?.episodes.length) return;
+    if (currentEpisode) saveCurrentEpisodeProgress();
+    const previousId = recentlyPlayed.find((id) => currentChannel.episodes.some((episode) => episode.id === id && id !== currentEpisode?.id));
+    const previousIndex = previousId ? currentChannel.episodes.findIndex((episode) => episode.id === previousId) : (episodeIndex - 1 + currentChannel.episodes.length) % currentChannel.episodes.length;
+    setRecentlyPlayed((history) => [currentEpisode?.id, ...history].filter((id): id is string => Boolean(id)).slice(0, 24));
+    setEpisodeIndex(previousIndex); setIsPlaying(true);
+  }
 
   function handleMediaEnded(durationSeconds: number) {
     if (!currentEpisode) return;
     const minutes = intermissionMinutesForDuration(durationSeconds);
+    updateEpisodeWatchState(currentEpisode.id, 'watched', 0, true);
     setRecentlyPlayed((history) => [currentEpisode.id, ...history].slice(0, 12));
     setIsPlaying(false);
     setBreakSecondsRemaining(minutes * 60);
@@ -586,6 +646,7 @@ export default function Home() {
   function togglePower() {
     if (powerTimerRef.current) window.clearTimeout(powerTimerRef.current);
     if (isOn) {
+      saveCurrentEpisodeProgress();
       videoRef.current?.pause(); audioRef.current?.pause();
       setIsPlaying(false); setIsPoweringUp(false); setIsPoweringDown(true);
       powerTimerRef.current = window.setTimeout(() => { setIsOn(false); setIsPoweringDown(false); powerTimerRef.current = null; }, 640);
@@ -605,7 +666,7 @@ export default function Home() {
           <div className="television"><div className="tv-body">
             <div className="tv-face-label"><span>MODEL STV-90</span><span>STEREO / NTSC</span></div>
             <div className="tv-wood-grain" /><div className="screen-bezel"><div className="screen-glass"><div className="screen-content">
-              {!isOn ? <div className="off-screen"><div className="off-dot" /></div> : breakSecondsRemaining !== null ? <div className="intermission-screen" role="status" aria-live="polite"><span className="eyebrow">STATION BREAK</span><h2>We will be right back in {Math.ceil(breakSecondsRemaining / 60)} {Math.ceil(breakSecondsRemaining / 60) === 1 ? 'minute' : 'minutes'}.</h2><strong className="intermission-countdown">{Math.floor(breakSecondsRemaining / 60)}:{String(breakSecondsRemaining % 60).padStart(2, '0')}</strong><p>Take a little break before the next programme.</p></div> : currentEpisode?.src ? currentEpisode.kind === 'audio' ? <div className="audio-screen"><Disc3 size={68} /><span>audio only</span><strong>{currentEpisode.name}</strong><audio ref={audioRef} src={currentEpisode.src} muted={isMuted} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} /></div> : <video ref={videoRef} src={currentEpisode.src} muted={isMuted} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} playsInline /> : <div className="demo-screen" style={{ '--channel-accent': currentChannel.accent } as React.CSSProperties}><div className="demo-haze" /><div className="demo-bloom" /><div className="demo-copy"><span>NOW BROADCASTING</span><strong>{currentChannel.name}</strong><small>{currentEpisode?.name}</small></div><div className="demo-signal">{isPlaying ? 'PLAYING' : 'PAUSED'} <i>•</i> {currentChannel.callSign}</div></div>}
+              {!isOn ? <div className="off-screen"><div className="off-dot" /></div> : breakSecondsRemaining !== null ? <div className="intermission-screen" role="status" aria-live="polite"><span className="eyebrow">STATION BREAK</span><h2>We will be right back in {Math.ceil(breakSecondsRemaining / 60)} {Math.ceil(breakSecondsRemaining / 60) === 1 ? 'minute' : 'minutes'}.</h2><strong className="intermission-countdown">{Math.floor(breakSecondsRemaining / 60)}:{String(breakSecondsRemaining % 60).padStart(2, '0')}</strong><p>Take a little break before the next programme.</p></div> : currentEpisode?.src ? currentEpisode.kind === 'audio' ? <div className="audio-screen"><Disc3 size={68} /><span>audio only</span><strong>{currentEpisode.name}</strong><audio ref={audioRef} src={currentEpisode.src} muted={isMuted} onPlay={(event) => updateEpisodeWatchState(currentEpisode.id, 'in-progress', event.currentTarget.currentTime, true)} onTimeUpdate={(event) => updateEpisodeWatchState(currentEpisode.id, 'in-progress', event.currentTarget.currentTime)} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} /></div> : <video ref={videoRef} src={currentEpisode.src} muted={isMuted} onPlay={(event) => updateEpisodeWatchState(currentEpisode.id, 'in-progress', event.currentTarget.currentTime, true)} onTimeUpdate={(event) => updateEpisodeWatchState(currentEpisode.id, 'in-progress', event.currentTarget.currentTime)} onEnded={(event) => handleMediaEnded(event.currentTarget.duration)} playsInline /> : <div className="demo-screen" style={{ '--channel-accent': currentChannel.accent } as React.CSSProperties}><div className="demo-haze" /><div className="demo-bloom" /><div className="demo-copy"><span>NOW BROADCASTING</span><strong>{currentChannel.name}</strong><small>{currentEpisode?.name}</small></div><div className="demo-signal">{isPlaying ? 'PLAYING' : 'PAUSED'} <i>•</i> {currentChannel.callSign}</div></div>}
               {isPoweringDown && <div className="power-down-effect" aria-hidden="true"><span className="power-down-line" /></div>}
               {isPoweringUp && <div className="power-up-effect" aria-hidden="true"><span className="power-up-line" /></div>}
               <div className="scanlines" /><div className="screen-vignette" />{isOn && <div className="screen-overlay"><span>CH {String(currentChannel?.number ?? 0).padStart(2, '0')} - {currentChannel?.name}</span><span>{isMuted ? 'MUTE' : 'STEREO'}</span></div>}
@@ -613,7 +674,7 @@ export default function Home() {
             <div className="speaker-panel">
               {!isSpeakerCompartmentOpen ? <button type="button" className="speaker-grille" aria-expanded={false} aria-controls="speaker-compartment" aria-label="Open TV controls inside the speaker grille" onClick={() => setIsSpeakerCompartmentOpen(true)}>{Array.from({ length: 42 }).map((_, index) => <i key={index} />)}</button> : <div className="speaker-control-grille" id="speaker-compartment" role="group" aria-label="Now playing controls">
                 <div className="speaker-episode-ticker" aria-label={`Now playing: ${currentEpisode?.name ?? 'No programme selected'}`} title={currentEpisode?.name}><div className="speaker-episode-ticker-track" aria-hidden="true"><span>{currentEpisode?.name ?? 'No programme selected'}</span><span>{currentEpisode?.name ?? 'No programme selected'}</span></div></div>
-                <div className="speaker-transport"><button aria-label="Previous episode" disabled={breakSecondsRemaining !== null} onClick={previousEpisode}><SkipBack size={13} /></button><button className="speaker-play-button" aria-label={breakSecondsRemaining !== null ? 'Break in progress' : isPlaying ? 'Pause' : 'Play'} disabled={breakSecondsRemaining !== null} onClick={() => isOn && setIsPlaying((playing) => !playing)}>{isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}</button><button aria-label="Next random episode" disabled={breakSecondsRemaining !== null} onClick={nextEpisode}><SkipForward size={13} /></button><button aria-label={isMuted ? 'Unmute' : 'Mute'} onClick={() => setIsMuted((muted) => !muted)}>{isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button><button className="speaker-close-button" aria-label="Show speaker grille" onClick={() => setIsSpeakerCompartmentOpen(false)}><X size={12} /></button></div>
+                <div className="speaker-transport"><button aria-label="Previous episode" disabled={breakSecondsRemaining !== null} onClick={previousEpisode}><SkipBack size={13} /></button><button className="speaker-play-button" aria-label={breakSecondsRemaining !== null ? 'Break in progress' : isPlaying ? 'Pause' : 'Play'} disabled={breakSecondsRemaining !== null} onClick={() => { if (!isOn) return; if (isPlaying) { saveCurrentEpisodeProgress(); setIsPlaying(false); } else setIsPlaying(true); }}>{isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}</button><button aria-label="Next random episode" disabled={breakSecondsRemaining !== null} onClick={nextEpisode}><SkipForward size={13} /></button><button aria-label={isMuted ? 'Unmute' : 'Mute'} onClick={() => setIsMuted((muted) => !muted)}>{isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button><button className="speaker-close-button" aria-label="Show speaker grille" onClick={() => setIsSpeakerCompartmentOpen(false)}><X size={12} /></button></div>
               </div>}
               <span>slow tv</span>
             </div>
@@ -625,7 +686,7 @@ export default function Home() {
         <aside className={`guide-rail ${isGuideCollapsed ? 'is-collapsed' : ''}`}><div className="guide-header"><div><p className="eyebrow">CHANNEL GUIDE</p><h2>What’s on</h2></div><button type="button" className="guide-collapse-button" aria-label={isGuideCollapsed ? 'Expand channel guide' : 'Collapse channel guide'} aria-expanded={!isGuideCollapsed} onClick={() => setIsGuideCollapsed((collapsed) => !collapsed)}><ChevronRight size={18} /></button></div><div className="guide-collapsed-meta"><button type="button" className="guide-collapsed-manage" onClick={openManageChannels} disabled={isScanning} aria-label="Manage channels" title="Manage channels"><FolderOpen size={16} /><span>MANAGE</span></button></div><span className="guide-collapsed-clock live-clock">{clock}</span><label className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a channel" /><kbd>/</kbd></label><div className="guide-list">{visibleChannels.map((channel) => <div key={channel.id} className="guide-card-shell"><button className={`guide-card ${channels.findIndex((item) => item.id === channel.id) === channelIndex ? 'active' : ''}`} onClick={() => selectChannel(channels.findIndex((item) => item.id === channel.id))}><span className="guide-time" style={{ color: channel.accent }}>CH {String(channel.number).padStart(2, '0')}</span><strong>{channel.name}</strong><small>{channelNeedsFolder(channel) ? 'content missing · reconnect folder' : `${channel.episodes.length} ${channel.episodes.length === 1 ? 'episode' : 'episodes'} · ${channel.genre}`}</small><i style={{ background: channel.accent }} /></button></div>)}</div><div className="guide-footer"><button className="manage-channels-button" onClick={openManageChannels} disabled={isScanning}><FolderOpen size={16} /><span>{isScanning ? 'Reading folder…' : 'Manage channels'}</span><ChevronRight size={15} /></button><div className="guide-identity"><div className="brand-lockup"><div className="brand-mark"><Radio size={14} strokeWidth={2.5} /></div><div><p className="brand-name">SLOW TV</p><p className="brand-subtitle">home broadcast system</p></div></div><span className="live-clock">{clock}</span></div></div></aside>
       </div>
 
-      {showSettings && <div className={"modal-backdrop" + (closingModal === "settings" ? " modal-closing" : "")} onClick={() => closeModal("settings")}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => closeModal("settings")} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV never copies your media. It remembers channel metadata in the browser and stores a local permission handle so it can read the same folders again. Export your channels if you want a portable backup.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Random playback</strong><span>Never repeat the last episode in a row.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Folder memory</strong><span>Cookie + local browser storage, with handles in IndexedDB.</span></div><span className="setting-pill soft">LOCAL</span></div></section></div>}
+      {showSettings && <div className={"modal-backdrop" + (closingModal === "settings" ? " modal-closing" : "")} onClick={() => closeModal("settings")}><section className="settings-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">SYSTEM NOTES</p><h2>Make it yours</h2></div><button className="icon-button" onClick={() => closeModal("settings")} aria-label="Close settings"><X size={18} /></button></div><p className="settings-copy">Slow TV never copies your media. It remembers channel metadata in the browser and stores a local permission handle so it can read the same folders again. Export your channels if you want a portable backup.</p><div className="settings-rule" /><div className="settings-row"><div><strong>Random playback</strong><span>Resumes unfinished episodes, then picks randomly from unwatched content.</span></div><span className="setting-pill">ON</span></div><div className="settings-row"><div><strong>Folder memory</strong><span>Profile cookie + local browser storage, with handles in IndexedDB.</span></div><span className="setting-pill soft">LOCAL</span></div></section></div>}
       {showChannelModal && <div className={"modal-backdrop" + (closingModal === "channels" ? " modal-closing" : "")} onClick={() => closeModal("channels")}><section className="channel-manager-card" onClick={(event) => event.stopPropagation()}><div className="settings-heading"><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Manage channels</h2></div><button className="icon-button" onClick={() => closeModal("channels")} aria-label="Close channel manager"><X size={18} /></button></div><p className="channel-editor-copy">Drag channels to change their order. Add a folder, reconnect a channel, or keep a portable backup of your channel metadata.</p><div className="channel-manager-list">{channels.map((channel) => <div className={"channel-manager-row" + (dragOverChannelId === channel.id ? " drag-over" : "") + (draggingChannelId === channel.id ? " dragging" : "")} key={channel.id} draggable onDragStart={(event) => { setDraggingChannelId(channel.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", channel.id); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; if (dragOverChannelId !== channel.id) setDragOverChannelId(channel.id); }} onDrop={(event) => { event.preventDefault(); const draggedId = event.dataTransfer.getData("text/plain") || draggingChannelId; if (draggedId) reorderChannels(draggedId, channel.id); setDraggingChannelId(null); setDragOverChannelId(null); }} onDragEnd={() => { setDraggingChannelId(null); setDragOverChannelId(null); }}><span className="channel-drag-handle" aria-hidden="true"><GripVertical size={15} /></span><span className="channel-manager-swatch" style={{ background: channel.accent }} /><div className="channel-manager-copy"><strong><span>CH {String(channel.number).padStart(2, "0")}</span>{channel.name}</strong><small>{channel.source === "folder" ? channel.folderPath ?? "local folder" : "demo channel"}{channelNeedsFolder(channel) ? " · CONTENT MISSING · CHOOSE FOLDER" : " · " + channel.episodes.length + " episodes"}</small></div><div className="channel-manager-row-actions"><button className="channel-manager-edit" onClick={() => openEditChannelModal(channel)} aria-label={"Edit " + channel.name}><Edit3 size={14} /> Edit</button><button className="channel-manager-delete" onClick={() => setChannelPendingDelete(channel)} aria-label={"Delete " + channel.name}><Trash2 size={14} /> Delete</button></div></div>)}</div><div className="channel-manager-actions"><button type="button" className="manage-add-button" onClick={openNewChannelModal} disabled={isScanning}><FolderOpen size={15} /> Add channel</button><div className="guide-actions"><button className="guide-text-button" onClick={() => importInputRef.current?.click()}>Import</button><button className="guide-text-button" onClick={exportChannels}>Export</button></div></div>{channelEditorOpen && <div className="channel-editor-panel"><div className="channel-editor-panel-heading"><div><p className="eyebrow">{editingChannelId ? 'EDIT CHANNEL' : 'NEW CHANNEL'}</p><h3>{editingChannelId ? 'Update channel' : 'Add a channel'}</h3></div><button type="button" className="icon-button small" onClick={() => setChannelEditorOpen(false)} aria-label="Close channel form"><X size={16} /></button></div><form onSubmit={submitChannelEditor}><div className="channel-form-grid"><label><span>Channel number</span><input type="number" min="1" max="99" value={channelDraft.number} onChange={(event) => setChannelDraft((draft) => ({ ...draft, number: Number(event.target.value) }))} /></label><label><span>Channel name</span><input autoFocus value={channelDraft.name} placeholder="e.g. Saturday cartoons" onChange={(event) => setChannelDraft((draft) => ({ ...draft, name: event.target.value }))} /></label></div><label className="channel-form-full"><span>Colour</span><div className="channel-palette">{channelPalette.map((color) => <button key={color} type="button" className={`color-swatch ${channelDraft.color === color ? 'selected' : ''}`} aria-label={`Use ${color}`} onClick={() => setChannelDraft((draft) => ({ ...draft, color }))} style={{ background: color }} />)}</div></label><label className="channel-form-full folder-path-field"><span>Content folder <em>browser reference</em></span><div className="folder-select-row"><input className="folder-path-input" readOnly value={editingChannel?.folderPath ?? ""} placeholder={editingChannelId ? "Folder not connected — choose a folder below" : "Choose a folder after saving channel details"} />{!editingChannelId && <button type="button" className="folder-browse-button" onClick={browseFolderForDraft}><FolderOpen size={15} /><span>Browse</span></button>}</div></label><label className="channel-form-full"><span>Description <em>optional</em></span><textarea rows={3} value={channelDraft.description} placeholder="A little note about what lives on this channel" onChange={(event) => setChannelDraft((draft) => ({ ...draft, description: event.target.value }))} /></label><div className="channel-editor-actions">{editingChannelId && <button type="button" className="remove-channel-button" onClick={removeEditingChannel}><Trash2 size={15} /> Remove channel</button>}{editingChannelId && <button type="button" className="folder-channel-button" onClick={openFolderForEditingChannel}><FolderOpen size={15} /> {editingChannel && channelNeedsFolder(editingChannel) ? "Choose folder" : "Change folder"}</button>}<button type="button" className="cancel-channel-button" onClick={() => setChannelEditorOpen(false)}>Cancel</button><button type="submit" className="save-channel-button">{editingChannelId ? 'Save changes' : 'Choose folder & create'}</button></div></form></div>}</section></div>}
       {channelPendingDelete && <div className={"modal-backdrop delete-modal-backdrop" + (closingModal === "delete" ? " modal-closing" : "")} onClick={() => closeModal("delete")}><section className="delete-channel-card" onClick={(event) => event.stopPropagation()}><div className="delete-channel-heading"><div className="delete-channel-icon"><Trash2 size={18} /></div><div><p className="eyebrow">CHANNEL SETTINGS</p><h2>Delete channel?</h2></div></div><p className="delete-channel-copy">Remove <strong>{channelPendingDelete.name}</strong> from your lineup? The channel entry and its saved metadata will be removed, but Slow TV will not delete or move any files in your media folder.</p><div className="delete-channel-actions"><button type="button" className="cancel-channel-button" onClick={() => closeModal("delete")}>Keep channel</button><button type="button" className="delete-confirm-button" onClick={() => removeChannel(channelPendingDelete)}><Trash2 size={15} /> Delete channel</button></div></section></div>}
       {toast && <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite"><span className="toast-dot" />{toast.message}</div>}

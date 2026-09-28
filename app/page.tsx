@@ -186,6 +186,7 @@ export default function Home() {
   const [clock, setClock] = useState('12:42');
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const manualSchedulesRef = useRef<Record<string, { startedAt: number; episodeIndex: number; offset: number }>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const objectUrlsRef = useRef<string[]>([]);
@@ -199,12 +200,20 @@ export default function Home() {
 
   function scheduleForChannel(channel: Channel | undefined, timestamp: number) {
     if (!channel?.episodes.length) return { episodeIndex: 0, offset: 0 };
-    const midnight = new Date(timestamp);
-    midnight.setHours(0, 0, 0, 0);
-    const elapsed = Math.max(0, (timestamp - midnight.getTime()) / 1000);
     const durations = channel.episodes.map((episode) => mediaDurations[episode.id] ?? 20 * 60);
     const playlistLength = durations.reduce((sum, duration) => sum + duration, 0);
-    let position = playlistLength ? elapsed % playlistLength : 0;
+    const manualSchedule = manualSchedulesRef.current[channel.id];
+    let startPosition = 0;
+    let elapsed: number;
+    if (manualSchedule) {
+      startPosition = durations.slice(0, manualSchedule.episodeIndex).reduce((sum, duration) => sum + duration, 0) + manualSchedule.offset;
+      elapsed = Math.max(0, (timestamp - manualSchedule.startedAt) / 1000);
+    } else {
+      const midnight = new Date(timestamp);
+      midnight.setHours(0, 0, 0, 0);
+      elapsed = Math.max(0, (timestamp - midnight.getTime()) / 1000);
+    }
+    let position = playlistLength ? (startPosition + elapsed) % playlistLength : 0;
     for (let index = 0; index < durations.length; index += 1) {
       if (position < durations[index]) return { episodeIndex: index, offset: position };
       position -= durations[index];
@@ -249,16 +258,25 @@ export default function Home() {
 
   useEffect(() => {
     const media = currentEpisode?.kind === 'audio' ? audioRef.current : videoRef.current;
-    if (!media || !currentEpisode?.src || !isOn) return;
-    const seekAndPlay = () => {
+    if (!media || !currentEpisode?.src) return;
+    const seekToSchedule = () => {
       if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = Math.min(scheduledOffset, Math.max(0, media.duration - 0.1));
-      if (isPlaying) void media.play().catch(() => setStatus('press play to start this file'));
     };
-    media.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+    media.addEventListener('loadedmetadata', seekToSchedule, { once: true });
     media.load();
-    if (media.readyState >= 1) seekAndPlay();
-    return () => media.removeEventListener('loadedmetadata', seekAndPlay);
-  }, [currentEpisode, isOn, isPlaying, scheduledOffset]);
+    if (media.readyState >= 1) seekToSchedule();
+    return () => media.removeEventListener('loadedmetadata', seekToSchedule);
+  }, [currentEpisode, scheduledOffset]);
+
+  useEffect(() => {
+    const media = currentEpisode?.kind === 'audio' ? audioRef.current : videoRef.current;
+    if (!media || !currentEpisode?.src) return;
+    if (!isOn || !isPlaying || breakSecondsRemaining !== null) { media.pause(); return; }
+    const startPlayback = () => { void media.play().catch(() => setStatus('press play to start this file')); };
+    if (media.readyState >= 2) startPlayback();
+    else media.addEventListener('loadedmetadata', startPlayback, { once: true });
+    return () => media.removeEventListener('loadedmetadata', startPlayback);
+  }, [currentEpisode, isOn, isPlaying, breakSecondsRemaining]);
 
   useEffect(() => {
     if (breakSecondsRemaining === null) return;
@@ -334,15 +352,20 @@ export default function Home() {
     setChannelIndex(index); setEpisodeIndex(scheduled.episodeIndex); setScheduledOffset(scheduled.offset); setIsPlaying(true); setStatus(`tuned to ${selectedChannel?.name ?? 'channel'}`);
   }
   function changeChannel(direction: number) { if (channels.length) selectChannel((channelIndex + direction + channels.length) % channels.length); }
+  function anchorManualSchedule(index: number, offset = 0) {
+    if (currentChannel) manualSchedulesRef.current[currentChannel.id] = { startedAt: Date.now(), episodeIndex: index, offset };
+  }
   function nextEpisode() {
     if (!currentChannel?.episodes.length || (breakSecondsRemaining !== null && breakSecondsRemaining > 0)) return;
     const candidates = currentChannel.episodes.filter((episode) => episode.id !== recentlyPlayed[0]);
     const pool = candidates.length ? candidates : currentChannel.episodes;
     const choice = pool[Math.floor(Math.random() * pool.length)];
-    setEpisodeIndex(Math.max(currentChannel.episodes.findIndex((episode) => episode.id === choice.id), 0));
+    const nextIndex = Math.max(currentChannel.episodes.findIndex((episode) => episode.id === choice.id), 0);
+    anchorManualSchedule(nextIndex);
+    setEpisodeIndex(nextIndex); setScheduledOffset(0);
     setRecentlyPlayed((history) => [choice.id, ...history].slice(0, 12)); setIsPlaying(true); setStatus(`playing something from ${currentChannel.name}`);
   }
-  function previousEpisode() { if (breakSecondsRemaining !== null) return; if (currentChannel?.episodes.length) { setEpisodeIndex((index) => (index - 1 + currentChannel.episodes.length) % currentChannel.episodes.length); setIsPlaying(true); } }
+  function previousEpisode() { if (breakSecondsRemaining !== null) return; if (currentChannel?.episodes.length) { const previousIndex = (episodeIndex - 1 + currentChannel.episodes.length) % currentChannel.episodes.length; anchorManualSchedule(previousIndex); setEpisodeIndex(previousIndex); setScheduledOffset(0); setIsPlaying(true); } }
 
   function handleMediaEnded(durationSeconds: number) {
     if (!currentEpisode) return;

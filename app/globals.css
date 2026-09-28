@@ -94,7 +94,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .speaker-grille { width: 100%; display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; padding: 14px 11px; border: 2px solid #3e2a1b; border-radius: 8px; color: inherit; background: rgba(28,22,17,.18); box-shadow: inset 0 0 18px rgba(0,0,0,.25); transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
 .speaker-grille:hover, .speaker-grille[aria-expanded="true"] { border-color: #8a603c; background: rgba(28,22,17,.3); box-shadow: inset 0 0 18px rgba(0,0,0,.25), 0 0 0 2px rgba(228,184,103,.12); }
 .speaker-grille i { display: block; height: 7px; border-radius: 1px; background: #3e2b1c; transform: skewY(-24deg); opacity: .76; }
-.speaker-control-grille { width: 100%; min-width: 0; padding: 8px; border: 2px solid #3e2a1b; border-radius: 8px; background: linear-gradient(145deg, #30231a, #171411 75%); box-shadow: inset 0 1px 4px rgba(0,0,0,.55), 0 2px 3px rgba(33,15,8,.24); animation: grilleReveal .2s ease-out both; }
+.speaker-control-grille { width: 100%; min-width: 0; min-height: 111px; display: flex; flex-direction: column; justify-content: space-between; padding: 10px 8px; border: 2px solid #3e2a1b; border-radius: 8px; background: linear-gradient(145deg, #30231a, #171411 75%); box-shadow: inset 0 1px 4px rgba(0,0,0,.55), 0 2px 3px rgba(33,15,8,.24); animation: grilleReveal .2s ease-out both; }
+.speaker-episode-ticker { width: 100%; overflow: hidden; border-bottom: 1px solid rgba(201,168,120,.2); color: #e5ddcb; font: 9px/1.35 var(--font-mono-local); white-space: nowrap; }
+.speaker-episode-ticker-track { width: max-content; display: flex; gap: 28px; animation: episodeTickerScroll 14s linear infinite; }
+.speaker-episode-ticker-track span { flex: none; }
+.speaker-control-grille:hover .speaker-episode-ticker-track { animation-play-state: paused; }
 .speaker-transport { display: flex; align-items: center; justify-content: space-between; gap: 3px; }
 .speaker-transport button { width: 25px; height: 25px; flex: 0 0 25px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #d9d0bf; background: rgba(255,255,255,.07); }
 .speaker-transport button:disabled { opacity: .38; }
@@ -144,8 +148,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
 .guide-rail.is-collapsed > :not(.guide-header):not(.guide-collapsed-meta):not(.guide-collapsed-clock) { opacity: 0; visibility: hidden; transform: translateX(10px); pointer-events: none; transition: opacity .12s ease, transform .18s ease, visibility 0s linear .18s; }
 .guide-rail.is-collapsed .guide-header { justify-content: center; margin: 0; }
 .guide-rail.is-collapsed .guide-header > div { display: none; }
-.guide-collapsed-meta { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-top: 22px; opacity: 0; visibility: hidden; transform: translateY(-6px); pointer-events: none; transition: opacity .16s ease, transform .22s ease, visibility 0s linear .22s; }
-.guide-rail.is-collapsed .guide-collapsed-meta { opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto; transition-delay: .08s; }
+.guide-collapsed-meta { max-height: 0; display: flex; flex-direction: column; align-items: center; gap: 0; margin-top: 0; overflow: hidden; opacity: 0; visibility: hidden; transform: translateY(-6px); pointer-events: none; transition: max-height .22s ease, margin .22s ease, gap .22s ease, opacity .16s ease, transform .22s ease, visibility 0s linear .22s; }
+.guide-rail.is-collapsed .guide-collapsed-meta { max-height: 70px; gap: 16px; margin-top: 22px; opacity: 1; visibility: visible; transform: translateY(0); pointer-events: auto; transition-delay: .08s; }
 .guide-collapsed-clock { display: none; }
 .guide-rail.is-collapsed .guide-collapsed-clock { display: block; margin-top: auto; margin-bottom: 2px; color: #9aa493; font: 9px var(--font-mono-local); letter-spacing: .02em; writing-mode: vertical-rl; transform: rotate(180deg); }
 .guide-collapsed-manage { display: grid; justify-items: center; gap: 5px; padding: 6px 2px; border: 0; border-radius: 6px; color: #9aa493; background: transparent; font: 8px var(--font-mono-local); letter-spacing: .04em; }
@@ -294,16 +298,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--signal); ou
   .layout-grid.guide-collapsed .tv-stage { height: auto; min-height: 100vh; }
   .layout-grid.guide-collapsed .library-rail { overflow-y: visible; }
   .guide-rail.is-collapsed { min-height: 0; height: 56px; padding: 10px 17px; align-items: center; flex-direction: row; justify-content: flex-end; gap: 16px; }
-  .guide-rail.is-collapsed .guide-collapsed-meta { flex-direction: row; gap: 12px; margin: 0; }
+  .guide-rail.is-collapsed .guide-collapsed-meta { max-height: 70px; flex-direction: row; gap: 12px; margin: 0; }
   .guide-rail.is-collapsed .guide-collapsed-clock { margin: 0 0 0 auto; writing-mode: initial; transform: none; }
   .tv-stage { height: auto; min-height: 100vh; padding: 18px 15px 14px; } .television { flex: none; padding-top: 18px; }
   .tv-body { height: auto; min-height: 0; padding: 18px 16px 19px; grid-template-columns: minmax(0, 1fr) 112px; gap: 12px; border-radius: 12px 12px 18px 18px; } .screen-bezel { min-height: 260px; padding: 8px; border-radius: 22px; } .screen-glass, .screen-content, .demo-screen, .off-screen { min-height: 240px; } .screen-content video { min-height: 240px; } .demo-copy strong { font-size: 27px; } .demo-copy small { font-size: 10px; }
-  .speaker-panel { padding-top: 15px; } .speaker-grille { gap: 3px; padding: 9px 7px; } .speaker-grille i { height: 5px; } .speaker-panel > span { font-size: 9px; } .speaker-control-grille { padding: 6px; } .speaker-transport { gap: 1px; } .speaker-transport button { width: 18px; height: 20px; flex-basis: 18px; } .speaker-transport .speaker-close-button { width: 14px; flex-basis: 14px; } .speaker-transport button svg { width: 11px; height: 11px; } .control-panel { gap: 12px; } .brand-stamp { font-size: 8px; } .brand-stamp b { font-size: 12px; } .knob-cluster { gap: 14px; } .knob { width: 42px; height: 42px; } .knob::before { left: 19px; top: 5px; height: 14px; } .knob.volume { width: 37px; height: 37px; } .knob.volume::before { left: 16px; height: 11px; } .knob-button small, .power-button { font-size: 7px; } .power-button svg { width: 20px; height: 20px; }
+  .speaker-panel { padding-top: 15px; } .speaker-grille { gap: 3px; padding: 9px 7px; } .speaker-grille i { height: 5px; } .speaker-panel > span { font-size: 9px; } .speaker-control-grille { min-height: 75px; padding: 7px 5px; } .speaker-episode-ticker { font-size: 7px; } .speaker-transport { gap: 1px; } .speaker-transport button { width: 18px; height: 20px; flex-basis: 18px; } .speaker-transport .speaker-close-button { width: 14px; flex-basis: 14px; } .speaker-transport button svg { width: 11px; height: 11px; } .control-panel { gap: 12px; } .brand-stamp { font-size: 8px; } .brand-stamp b { font-size: 12px; } .knob-cluster { gap: 14px; } .knob { width: 42px; height: 42px; } .knob::before { left: 19px; top: 5px; height: 14px; } .knob.volume { width: 37px; height: 37px; } .knob.volume::before { left: 16px; height: 11px; } .knob-button small, .power-button { font-size: 7px; } .power-button svg { width: 20px; height: 20px; }
 }
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes grilleReveal { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }
+@keyframes episodeTickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 @keyframes modalBackdropIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modalBackdropOut { from { opacity: 1; } to { opacity: 0; } }
 @keyframes modalCardIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes modalCardOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(8px) scale(.98); } }
-@media (prefers-reduced-motion: reduce) { .demo-haze, .demo-bloom { animation: none; } .layout-grid, .guide-rail, .guide-rail > :not(.guide-header), .guide-collapsed-meta, .speaker-grille { transition: none; } .speaker-control-grille { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .demo-haze, .demo-bloom { animation: none; } .layout-grid, .guide-rail, .guide-rail > :not(.guide-header), .guide-collapsed-meta, .speaker-grille { transition: none; } .speaker-control-grille { animation: none; } .speaker-episode-ticker-track { animation: none; } }

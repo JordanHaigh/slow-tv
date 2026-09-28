@@ -67,8 +67,7 @@ components/ui/   Reusable UI primitives
 hooks/            Shared React hooks
 lib/              Shared utilities
 public/           Static assets
-.openai/          Sites hosting configuration
-vite.config.ts    Vinext, Vite, Cloudflare, and Sites configuration
+vite.config.ts    Vinext and Vite configuration
 ```
 
 ## Available scripts
@@ -77,19 +76,19 @@ vite.config.ts    Vinext, Vite, Cloudflare, and Sites configuration
 | --- | --- |
 | `npm run dev` | Start the local development server |
 | `npm run build` | Create a production build |
-| `npm run start` | Run the built Cloudflare-compatible server locally |
+| `npm run preview` | Preview the static production build locally |
 | `npm run lint` | Run Oxlint |
 | `npm run format` | Format the project with Oxfmt |
 
 ## Deployment
 
-The project is configured for the OpenAI Sites hosting workflow. Build and test changes locally first:
+The project deploys to GitHub Pages through GitHub Actions whenever changes are pushed to `main`. To publish manually, open the repository’s **Actions** tab and run **Deploy to GitHub Pages**. Build the static site locally with:
 
 ```bash
 npm run build
 ```
 
-Deployment is separate from local development and does not upload any media selected through the browser. See [Slow_TV_ChatGPT_Deployment_Guide.md](Slow_TV_ChatGPT_Deployment_Guide.md) for the repository’s private deployment workflow.
+The workflow publishes the static build from `dist/client`. It does not upload any media selected through the browser. See [Deployment_Guide.md](Deployment_Guide.md) for setup details.
 
 ## Technical notes
 
@@ -97,4 +96,4 @@ Deployment is separate from local development and does not upload any media sele
 - Styling uses Tailwind CSS 4, custom CSS, and the installed Shadcn UI primitives.
 - Folder selection uses the File System Access API when available, with a directory-upload fallback for browsers that do not support it.
 - Media is played with native HTML `<video>` and `<audio>` elements.
-- There is no application database or server-side media storage; `.openai/hosting.json` currently has no D1 or R2 bindings.
+- The app has no application database or server-side media storage.
